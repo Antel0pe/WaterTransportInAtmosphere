@@ -10,15 +10,12 @@ const EarthBase = dynamic(() => import("./layers/EarthBase"), {
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
 
-const HurricanePancake = dynamic(() => import("./layers/HurricanePancake"), {
+const MoistureTransportLayer = dynamic(() => import("./layers/MoistureTransportLayer"), {
   ssr: false,
-  loading: () => null,
+  loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
 
-const WindArrow = dynamic(() => import("./layers/WindArrow"), {
-  ssr: false,
-  loading: () => null,
-});
+
 
 const TimeSlider = dynamic(() => import("./TimeSlider"), {
   ssr: false,
@@ -26,7 +23,7 @@ const TimeSlider = dynamic(() => import("./TimeSlider"), {
 });
 
 export default function HomeClient() {
-  const [datehour, setDatehour] = useState(() => "2012-10-22T00:00");
+  const [datehour, setDatehour] = useState(() => "2021-11-22T00:00");
   const [allReady, setAllReady] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
@@ -60,8 +57,7 @@ export default function HomeClient() {
               if (timestamp === datehour) setAllReady(ready);
             }}
           >
-            <HurricanePancake />
-            {/* <WindArrow /> */}
+            <MoistureTransportLayer />
           </EarthBase>
         </div>
 

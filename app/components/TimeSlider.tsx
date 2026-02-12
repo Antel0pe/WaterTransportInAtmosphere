@@ -5,8 +5,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 // -----------------------------
 // Constants
 // -----------------------------
-const START_STR = "2012-10-22T00:00";
-const END_STR = "2012-10-31T12:00";
+const START_STR = "2021-11-01T00:00";
+const END_STR = "2021-12-31T23:00";
 const MS_PER_HOUR = 3_600_000;
 const COMMIT_DELAY_MS = 100;
 
