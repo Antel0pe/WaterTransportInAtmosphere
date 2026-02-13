@@ -31,7 +31,7 @@ export default function MoistureTransportLayer() {
                 uStrength: { value: 2.0 },
                 uThreshold: { value: 0.0 }, // e.g. 1.0 or 2.0 if you want to suppress noise
                 uGamma: { value: 1.0 },     // e.g. 1.2 makes only higher TCW pop more
-                uChannel: { value: 0 }, // 0=R, 1=G, 2=B (default B)
+                uChannel: { value: 2 }, // 0=R, 1=G, 2=B (default B)
                 uLonOffset: { value: 0.25 }, 
 
             },
