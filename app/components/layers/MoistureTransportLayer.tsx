@@ -31,6 +31,9 @@ export default function MoistureTransportLayer() {
                 uStrength: { value: 2.0 },
                 uThreshold: { value: 0.0 }, // e.g. 1.0 or 2.0 if you want to suppress noise
                 uGamma: { value: 1.0 },     // e.g. 1.2 makes only higher TCW pop more
+                uChannel: { value: 0 }, // 0=R, 1=G, 2=B (default B)
+                uLonOffset: { value: 0.25 }, 
+
             },
             vertexShader: `
         varying vec2 vUv;
@@ -40,27 +43,40 @@ export default function MoistureTransportLayer() {
         }
       `,
 fragmentShader: `
-  uniform sampler2D uTex;
-  varying vec2 vUv;
+uniform sampler2D uTex;
+uniform int uChannel;      // 0=R, 1=G, 2=B
+uniform float uLonOffset;  // 0..1 (0.5 = 180° shift)
+varying vec2 vUv;
 
-  void main() {
-    vec4 tex = texture2D(uTex, vUv);
+float pickChannel(vec3 rgb, int ch) {
+  if (ch == 0) return rgb.r;
+  if (ch == 1) return rgb.g;
+  return rgb.b;
+}
 
-    // undo your encoding: tcw = tex.b * 110
-    float tcw = tex.b * 110.0;
+void main() {
+  // wrap longitude shift in shader (works even if texture is clamped)
+  vec2 uv = vUv;
+  uv.x = fract(uv.x + uLonOffset);
 
-    // cap at 70 (everything >= 70 maps to max)
-    float t = clamp(tcw / 70.0, 0.0, 1.0);
+  vec4 tex = texture2D(uTex, uv);
 
-    // purely linear dark-red -> bright-red
-    float base = 1.0;               // set >0.0 if you want a non-black "dark red"
-    float r = mix(base, 1.0, t);
+  float c = pickChannel(tex.rgb, uChannel);
 
-    // linear alpha too (or set to a constant if you want a fully visible layer)
-    float a = t;
+  // decode example (your old encoding): value in [0..110]
+  float tcw = c * 110.0;
 
-    gl_FragColor = vec4(r, 0.0, 0.0, a);
-  }
+  // cap at 70
+  float t = clamp(tcw / 70.0, 0.0, 1.0);
+
+  // linear dark-red -> bright-red + alpha
+  float base = 1.0;
+  float r = mix(base, 1.0, t);
+  float a = t;
+
+  gl_FragColor = vec4(r, 0.0, 0.0, a);
+}
+
 `,
 
 
@@ -105,6 +121,11 @@ fragmentShader: `
 
                 // optional: depends on your png encoding; if it looks washed/too dark, tweak/remove
                 tex.colorSpace = THREE.SRGBColorSpace;
+                tex.flipY = true; 
+                tex.wrapS = THREE.RepeatWrapping;
+                tex.wrapT = THREE.RepeatWrapping;
+                tex.offset.x = 0.5;
+
 
                 // swap + cleanup old
                 const prev = mat.uniforms.uTex.value as THREE.Texture | null;
