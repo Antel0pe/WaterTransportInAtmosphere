@@ -2,7 +2,7 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { useEarthLayer } from "./EarthBase";
-import { moistureTransportApiUrl } from "../utils/ApiResponses";
+import { moistureTransportApiUrl, totalColumnWaterApiUrl } from "../utils/ApiResponses";
 
 
 export default function MoistureTransportLayer() {
@@ -27,57 +27,55 @@ export default function MoistureTransportLayer() {
             depthWrite: false, // important for overlay layers
             depthTest: true,
             uniforms: {
-                uTex: { value: null as THREE.Texture | null },
-                uStrength: { value: 2.0 },
-                uThreshold: { value: 0.0 }, // e.g. 1.0 or 2.0 if you want to suppress noise
-                uGamma: { value: 1.0 },     // e.g. 1.2 makes only higher TCW pop more
-                uChannel: { value: 2 }, // 0=R, 1=G, 2=B (default B)
-                uLonOffset: { value: 0.25 }, 
-
+                uTex: { value: null },
+                uLonOffset: { value: 0.5 },      // if you rolled lon in python by half
+                uAnomMin: { value: -50.0 },
+                uAnomMax: { value: 50.0 },
+                uThreshold: { value: 10.0 },      // start with 5–10
+                uGamma: { value: 1.0 },
             },
+
             vertexShader: `
         varying vec2 vUv;
         void main() {
           vUv = uv;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
-      `,
-fragmentShader: `
+      `, fragmentShader: `
 uniform sampler2D uTex;
-uniform int uChannel;      // 0=R, 1=G, 2=B
-uniform float uLonOffset;  // 0..1 (0.5 = 180° shift)
+uniform float uLonOffset;
+
+// your encoding params
+uniform float uAnomMin;   // -50.0
+uniform float uAnomMax;   //  50.0
+
+uniform float uThreshold; // e.g. 5.0 means hide |anom| < 5
+uniform float uGamma;     // e.g. 1.0..2.0
+
 varying vec2 vUv;
 
-float pickChannel(vec3 rgb, int ch) {
-  if (ch == 0) return rgb.r;
-  if (ch == 1) return rgb.g;
-  return rgb.b;
-}
-
 void main() {
-  // wrap longitude shift in shader (works even if texture is clamped)
-  vec2 uv = vUv;
-  uv.x = fract(uv.x + uLonOffset);
+vec2 uv = vUv;
+uv.x = fract(uv.x + uLonOffset);
 
-  vec4 tex = texture2D(uTex, uv);
+float c = texture2D(uTex, uv).b; // 0..1
 
-  float c = pickChannel(tex.rgb, uChannel);
+// decode blue channel back to anomaly units (e.g. kg/m^2)
+float anom = mix(uAnomMin, uAnomMax, c);
 
-  // decode example (your old encoding): value in [0..110]
-  float tcw = c * 110.0;
+// only keep positive anomalies above threshold
+if (anom <= uThreshold) discard;
 
-  // cap at 70
-  float t = clamp(tcw / 70.0, 0.0, 1.0);
+// normalize anomaly to 0..1 for intensity/alpha
+float t = clamp((anom - uThreshold) / (uAnomMax - uThreshold), 0.5, 1.0);
+t = pow(t, uGamma);  // optional shaping
 
-  // linear dark-red -> bright-red + alpha
-  float base = 1.0;
-  float r = mix(base, 1.0, t);
-  float a = t;
+// gl_FragColor = vec4(texture2D(uTex, uv).r, texture2D(uTex, uv).g, texture2D(uTex, uv).b, 1.0);
+gl_FragColor = vec4(c, 0.0, 0.0, t);
 
-  gl_FragColor = vec4(r, 0.0, 0.0, a);
 }
 
-`,
+       `,
 
 
         });
@@ -109,7 +107,8 @@ void main() {
         let cancelled = false;
 
         const mat = mesh.material as THREE.ShaderMaterial;
-        const url = moistureTransportApiUrl(timestamp);
+        // const url = moistureTransportApiUrl(timestamp);
+        const url = totalColumnWaterApiUrl(timestamp);
 
         new THREE.TextureLoader().load(
             url,
@@ -120,12 +119,12 @@ void main() {
                 }
 
                 // optional: depends on your png encoding; if it looks washed/too dark, tweak/remove
-                tex.colorSpace = THREE.SRGBColorSpace;
-                tex.flipY = true; 
+                // tex.colorSpace = THREE.SRGBColorSpace;
+                tex.colorSpace = THREE.NoColorSpace; // TO DO CHECK THIS PROPERLY
+
+                tex.flipY = true;
                 tex.wrapS = THREE.RepeatWrapping;
                 tex.wrapT = THREE.RepeatWrapping;
-                tex.offset.x = 0.5;
-
 
                 // swap + cleanup old
                 const prev = mat.uniforms.uTex.value as THREE.Texture | null;
