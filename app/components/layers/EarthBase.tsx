@@ -168,7 +168,7 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
         controls.update();
         renderer.render(scene, camera);
 
-        lookAtLatLon(25, -65, camera, controls, globe, 100);
+        lookAtLatLon(30, -115, camera, controls, globe, 100);
 
         scene.add(new THREE.AmbientLight(0xffffff, 2));
         const sun = null;

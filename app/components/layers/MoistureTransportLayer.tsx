@@ -67,7 +67,7 @@ float anom = mix(uAnomMin, uAnomMax, c);
 if (anom <= uThreshold) discard;
 
 // normalize anomaly to 0..1 for intensity/alpha
-float t = clamp((anom - uThreshold) / (uAnomMax - uThreshold), 0.5, 1.0);
+float t = clamp((anom - uThreshold) / (uAnomMax - uThreshold), 0.4, 1.0);
 t = pow(t, uGamma);  // optional shaping
 
 // gl_FragColor = vec4(texture2D(uTex, uv).r, texture2D(uTex, uv).g, texture2D(uTex, uv).b, 1.0);
