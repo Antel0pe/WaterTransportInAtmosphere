@@ -15,6 +15,10 @@ const MoistureTransportLayer = dynamic(() => import("./layers/MoistureTransportL
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
 
+const EvaporationLayer = dynamic(() => import("./layers/EvaporationLayer"), {
+  ssr: false,
+  loading: () => <div style={{ width: "100%", height: "100%" }} />,
+});
 
 
 const TimeSlider = dynamic(() => import("./TimeSlider"), {
@@ -58,6 +62,7 @@ export default function HomeClient() {
             }}
           >
             <MoistureTransportLayer />
+            <EvaporationLayer />
           </EarthBase>
         </div>
 

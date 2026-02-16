@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { useEarthLayer } from "./EarthBase";
 import { moistureTransportApiUrl, totalColumnWaterApiUrl } from "../utils/ApiResponses";
+import { useControls } from "../../state/controlsStore"; // adjust path
 
 
 export default function MoistureTransportLayer() {
@@ -130,6 +131,50 @@ vec3 hot  = vec3(1.00, 0.90, 0.55);
             if (t) t.dispose();
         };
     }, [engineReady]);
+
+    useEffect(() => {
+        if (!engineReady) return;
+        const mesh = meshRef.current;
+        if (!mesh) return;
+
+        const mat = mesh.material as THREE.ShaderMaterial;
+
+        // --- initial sync from store ---
+        {
+            const s = useControls.getState();
+            mesh.visible = s.layers.moisture;
+
+            mat.uniforms.uAnomMin.value = s.moisture.uAnomMin;
+            mat.uniforms.uAnomMax.value = s.moisture.uAnomMax;
+            mat.uniforms.uThreshold.value = s.moisture.uThreshold;
+            mat.uniforms.uGamma.value = s.moisture.uGamma;
+        }
+
+        // --- subscribe: visibility ---
+        const unsubVis = useControls.subscribe(
+            (st) => st.layers.moisture,
+            (v) => {
+                mesh.visible = v;
+            }
+        );
+
+        // --- subscribe: moisture params ---
+        const unsubParams = useControls.subscribe(
+            (st) => st.moisture,
+            (p) => {
+                mat.uniforms.uAnomMin.value = p.uAnomMin;
+                mat.uniforms.uAnomMax.value = p.uAnomMax;
+                mat.uniforms.uThreshold.value = p.uThreshold;
+                mat.uniforms.uGamma.value = p.uGamma;
+            }
+        );
+
+        return () => {
+            unsubVis();
+            unsubParams();
+        };
+    }, [engineReady]);
+
 
     // update on timestamp: load new png as texture and set uniform
     useEffect(() => {

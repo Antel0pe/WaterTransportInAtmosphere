@@ -1,3 +1,4 @@
+import TweakpaneControls from "@/app/state/TweakpaneControls";
 import ControlsHelp from "./ControlsHelp";
 import ExplainerCard from "./ExplainerCard";
 
@@ -22,6 +23,8 @@ export default function SidebarPane() {
       <ExplainerCard />
 
       <ControlsHelp />
+
+      <TweakpaneControls />
     </aside>
   );
 }
