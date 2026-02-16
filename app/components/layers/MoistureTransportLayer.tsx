@@ -45,34 +45,67 @@ export default function MoistureTransportLayer() {
 uniform sampler2D uTex;
 uniform float uLonOffset;
 
-// your encoding params
-uniform float uAnomMin;   // -50.0
-uniform float uAnomMax;   //  50.0
+uniform float uAnomMin;
+uniform float uAnomMax;
 
-uniform float uThreshold; // e.g. 5.0 means hide |anom| < 5
-uniform float uGamma;     // e.g. 1.0..2.0
+uniform float uThreshold;
+uniform float uGamma;
 
 varying vec2 vUv;
 
+// tiny hash for dithering (breaks banding)
+float hash12(vec2 p){
+  vec3 p3  = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
 void main() {
-vec2 uv = vUv;
-uv.x = fract(uv.x + uLonOffset);
+  vec2 uv = vUv;
+  uv.x = fract(uv.x + uLonOffset);
 
-float c = texture2D(uTex, uv).b; // 0..1
+  float c = texture2D(uTex, uv).b; // 0..1
+  float anom = mix(uAnomMin, uAnomMax, c);
 
-// decode blue channel back to anomaly units (e.g. kg/m^2)
-float anom = mix(uAnomMin, uAnomMax, c);
+  // keep only positive anomalies above threshold
+  if (anom <= uThreshold) discard;
 
-// only keep positive anomalies above threshold
-if (anom <= uThreshold) discard;
+  // normalized intensity above threshold
+  float t = clamp((anom - uThreshold) / (uAnomMax - uThreshold), 0.0, 1.0);
+  t = pow(t, uGamma);
 
-// normalize anomaly to 0..1 for intensity/alpha
-float t = clamp((anom - uThreshold) / (uAnomMax - uThreshold), 0.4, 1.0);
-t = pow(t, uGamma);  // optional shaping
+  // --- edge / filament enhancement ---
+  // boost where intensity changes quickly (makes strands pop)
+  float dx = abs(dFdx(t));
+  float dy = abs(dFdy(t));
+  float edge = clamp((dx + dy) * 6.0, 0.0, 1.0);
 
-// gl_FragColor = vec4(texture2D(uTex, uv).r, texture2D(uTex, uv).g, texture2D(uTex, uv).b, 1.0);
-gl_FragColor = vec4(c, 0.0, 0.0, t);
+  // --- glow + core ---
+  // soft body alpha, then add edge glow
+  float bodyA = smoothstep(0.05, 0.25, t);
+  float glowA = smoothstep(0.0, 1.0, edge) * 0.55;
 
+  float alpha = clamp(bodyA * 0.55 + glowA, 0.0, 1.0);
+
+  // --- color palette (reads over ocean) ---
+  // deep purple -> magenta -> warm gold/white at the core
+//   vec3 deep  = vec3(0.25, 0.05, 0.45);
+//   vec3 mid   = vec3(0.85, 0.20, 0.70);
+//   vec3 hot   = vec3(1.00, 0.92, 0.55);
+vec3 deep = vec3(0.02, 0.18, 0.22);
+vec3 mid  = vec3(0.10, 0.85, 0.72);
+vec3 hot  = vec3(1.00, 0.90, 0.55);
+
+  vec3 col = mix(deep, mid, smoothstep(0.15, 0.60, t));
+  col = mix(col, hot, smoothstep(0.65, 1.00, t));
+
+  // make edges brighter (outline-like)
+  col += edge * vec3(0.55, 0.45, 0.25);
+
+  // tiny dithering to reduce banding
+  col += (hash12(gl_FragCoord.xy) - 0.5) * 0.015;
+
+  gl_FragColor = vec4(col, alpha);
 }
 
        `,
