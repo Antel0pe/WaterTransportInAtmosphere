@@ -436,7 +436,7 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
         // Resize to parent
         const ro = new ResizeObserver(() => {
             const { w, h } = getSize();
-            renderer.setSize(w, h, false);
+            renderer.setSize(w, h);
             camera.aspect = w / h;
             camera.updateProjectionMatrix();
         });

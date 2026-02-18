@@ -15,18 +15,39 @@ export default function TweakpaneControls() {
       expanded: true,
     });
 
-    // Attach pane to this component's DOM
     hostRef.current.appendChild(pane.element);
 
+    const s0 = useControls.getState();
+
+    // Tweakpane binds to this mutable object
     const ui = {
-      moisture: useControls.getState().layers.moisture,
-      evaporation: useControls.getState().layers.evaporation,
+      // layer toggles
+      moisture: s0.layers.moisture,
+      evaporation: s0.layers.evaporation,
+
+      // moisture params
+      uAnomMin: s0.moisture.uAnomMin,
+      uAnomMax: s0.moisture.uAnomMax,
+      moistureThreshold: s0.moisture.uThreshold,
+      moistureGamma: s0.moisture.uGamma,
+
+      // evap params
+      uEvapMin: s0.evap.uEvapMin,
+      uEvapMax: s0.evap.uEvapMax,
+      evapThreshold: s0.evap.uThreshold,
+      evapGamma: s0.evap.uGamma,
+      uAlphaScale: s0.evap.uAlphaScale,
     };
 
-    const folder = pane.addFolder({ title: "Layers" });
+    // ---- Layers ----
+    const layersFolder = pane.addFolder({ title: "Layers" });
 
-    const bMoisture = folder.addBinding(ui, "moisture", { label: "Moisture" });
-    const bEvap = folder.addBinding(ui, "evaporation", { label: "Evaporation" });
+    const bMoisture = layersFolder.addBinding(ui, "moisture", {
+      label: "Moisture",
+    });
+    const bEvap = layersFolder.addBinding(ui, "evaporation", {
+      label: "Evaporation",
+    });
 
     bMoisture.on("change", (e) => {
       useControls.getState().setLayer("moisture", !!e.value);
@@ -35,7 +56,108 @@ export default function TweakpaneControls() {
       useControls.getState().setLayer("evaporation", !!e.value);
     });
 
-    const unsubMoisture = useControls.subscribe(
+    // ---- Moisture params (sliders) ----
+    const moistureFolder = pane.addFolder({ title: "Moisture Params" });
+
+    const bAnomMin = moistureFolder.addBinding(ui, "uAnomMin", {
+      label: "uAnomMin",
+      min: -200,
+      max: 200,
+      step: 1,
+    });
+
+    const bAnomMax = moistureFolder.addBinding(ui, "uAnomMax", {
+      label: "uAnomMax",
+      min: -200,
+      max: 200,
+      step: 1,
+    });
+
+    const bMoistThr = moistureFolder.addBinding(ui, "moistureThreshold", {
+      label: "threshold",
+      min: -200,
+      max: 200,
+      step: 0.5,
+    });
+
+    const bMoistGamma = moistureFolder.addBinding(ui, "moistureGamma", {
+      label: "gamma",
+      min: 0.1,
+      max: 3.0,
+      step: 0.05,
+    });
+
+    bAnomMin.on("change", (e) => {
+      useControls.getState().setMoisture({ uAnomMin: Number(e.value) });
+    });
+    bAnomMax.on("change", (e) => {
+      useControls.getState().setMoisture({ uAnomMax: Number(e.value) });
+    });
+    bMoistThr.on("change", (e) => {
+      useControls.getState().setMoisture({ uThreshold: Number(e.value) });
+    });
+    bMoistGamma.on("change", (e) => {
+      useControls.getState().setMoisture({ uGamma: Number(e.value) });
+    });
+
+    // ---- Evap params (sliders) ----
+    const evapFolder = pane.addFolder({ title: "Evap Params" });
+
+    // NOTE: your evap values are typically tiny (e.g., 0..0.003),
+    // so use tight slider ranges for usability.
+    const bEvapMin = evapFolder.addBinding(ui, "uEvapMin", {
+      label: "uEvapMin",
+      min: 0.0,
+      max: 0.01,
+      step: 0.00001,
+    });
+
+    const bEvapMax = evapFolder.addBinding(ui, "uEvapMax", {
+      label: "uEvapMax",
+      min: 0.0,
+      max: 0.01,
+      step: 0.00001,
+    });
+
+    const bEvapThr = evapFolder.addBinding(ui, "evapThreshold", {
+      label: "threshold",
+      min: 0.0,
+      max: 0.01,
+      step: 0.00001,
+    });
+
+    const bEvapGamma = evapFolder.addBinding(ui, "evapGamma", {
+      label: "gamma",
+      min: 0.1,
+      max: 3.0,
+      step: 0.05,
+    });
+
+    const bAlphaScale = evapFolder.addBinding(ui, "uAlphaScale", {
+      label: "alphaScale",
+      min: 0.0,
+      max: 2.0,
+      step: 0.05,
+    });
+
+    bEvapMin.on("change", (e) => {
+      useControls.getState().setEvap({ uEvapMin: Number(e.value) });
+    });
+    bEvapMax.on("change", (e) => {
+      useControls.getState().setEvap({ uEvapMax: Number(e.value) });
+    });
+    bEvapThr.on("change", (e) => {
+      useControls.getState().setEvap({ uThreshold: Number(e.value) });
+    });
+    bEvapGamma.on("change", (e) => {
+      useControls.getState().setEvap({ uGamma: Number(e.value) });
+    });
+    bAlphaScale.on("change", (e) => {
+      useControls.getState().setEvap({ uAlphaScale: Number(e.value) });
+    });
+
+    // ---- subscriptions: keep tweakpane in sync if store changes elsewhere ----
+    const unsubMoistureVis = useControls.subscribe(
       (s) => s.layers.moisture,
       (v) => {
         ui.moisture = v;
@@ -43,7 +165,7 @@ export default function TweakpaneControls() {
       }
     );
 
-    const unsubEvap = useControls.subscribe(
+    const unsubEvapVis = useControls.subscribe(
       (s) => s.layers.evaporation,
       (v) => {
         ui.evaporation = v;
@@ -51,15 +173,37 @@ export default function TweakpaneControls() {
       }
     );
 
-    // IMPORTANT: remove the fixed positioning styles
-    // (Let it flow inside the sidebar)
+    const unsubMoistureParams = useControls.subscribe(
+      (s) => s.moisture,
+      (p) => {
+        ui.uAnomMin = p.uAnomMin;
+        ui.uAnomMax = p.uAnomMax;
+        ui.moistureThreshold = p.uThreshold;
+        ui.moistureGamma = p.uGamma;
+        pane.refresh();
+      }
+    );
+
+    const unsubEvapParams = useControls.subscribe(
+      (s) => s.evap,
+      (p) => {
+        ui.uEvapMin = p.uEvapMin;
+        ui.uEvapMax = p.uEvapMax;
+        ui.evapThreshold = p.uThreshold;
+        ui.evapGamma = p.uGamma;
+        ui.uAlphaScale = p.uAlphaScale;
+        pane.refresh();
+      }
+    );
+
     pane.element.style.width = "100%";
 
     return () => {
-      unsubMoisture();
-      unsubEvap();
+      unsubMoistureVis();
+      unsubEvapVis();
+      unsubMoistureParams();
+      unsubEvapParams();
       pane.dispose();
-      // Pane dispose removes listeners; but also detach in case
       pane.element.remove();
     };
   }, []);

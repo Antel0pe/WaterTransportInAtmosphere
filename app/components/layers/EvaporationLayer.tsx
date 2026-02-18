@@ -1,61 +1,52 @@
-// EvaporationLayer.tsx (client component)
+// EvaporationLayer.tsx
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { useEarthLayer } from "./EarthBase";
 import { moistureTransportApiUrl } from "../utils/ApiResponses";
 import { useControls } from "../../state/controlsStore";
 
-
 export default function EvaporationLayer() {
-    const { engineReady, sceneRef, globeRef, timestamp, signalReady } =
-        useEarthLayer("evaporation");
+  const { engineReady, sceneRef, globeRef, timestamp, signalReady } =
+    useEarthLayer("evaporation");
 
-    const meshRef = useRef<THREE.Mesh | null>(null);
+  const meshRef = useRef<THREE.Mesh | null>(null);
 
-    // ---- tune these ----
-    const EVAP_MIN = 0.0;
-    const EVAP_MAX = 0.003;
+  // init once
+  useEffect(() => {
+    if (!engineReady) return;
+    if (!sceneRef.current || !globeRef.current) return;
 
-    // "red threshold": hide everything below this evap
-    const EVAP_THRESHOLD = 0.0004; // try 0.0002–0.001
+    const scene = sceneRef.current;
 
-    // intensity shaping for "brighter red" as evap increases
-    const GAMMA = 0.8; // <1 boosts mid values, >1 compresses
-    const ALPHA_SCALE = 0.9;
+    const R = 100;
+    const LIFT = R * 0.002;
+    const geom = new THREE.SphereGeometry(R + LIFT, 128, 128);
 
-    // init once
-    useEffect(() => {
-        if (!engineReady) return;
-        if (!sceneRef.current || !globeRef.current) return;
+    // ⬇️ pull defaults from store (single source of truth)
+    const s = useControls.getState();
 
-        const scene = sceneRef.current;
+    const mat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      uniforms: {
+        uTex: { value: null as THREE.Texture | null },
+        uLonOffset: { value: 0.5 },
 
-        const R = 100;
-        const LIFT = R * 0.002;
-        const geom = new THREE.SphereGeometry(R + LIFT, 128, 128);
-
-        const mat = new THREE.ShaderMaterial({
-            transparent: true,
-            depthWrite: false,
-            depthTest: true,
-            uniforms: {
-                uTex: { value: null as THREE.Texture | null },
-                uLonOffset: { value: 0.5 },
-
-                uEvapMin: { value: EVAP_MIN },
-                uEvapMax: { value: EVAP_MAX },
-                uThreshold: { value: EVAP_THRESHOLD },
-                uGamma: { value: GAMMA },
-                uAlphaScale: { value: ALPHA_SCALE },
-            },
-            vertexShader: `
+        uEvapMin: { value: s.evap.uEvapMin },
+        uEvapMax: { value: s.evap.uEvapMax },
+        uThreshold: { value: s.evap.uThreshold },
+        uGamma: { value: s.evap.uGamma },
+        uAlphaScale: { value: s.evap.uAlphaScale },
+      },
+      vertexShader: `
         varying vec2 vUv;
         void main() {
           vUv = uv;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
-            fragmentShader: `
+      fragmentShader: `
         uniform sampler2D uTex;
         uniform float uLonOffset;
 
@@ -77,137 +68,119 @@ export default function EvaporationLayer() {
           vec2 uv = vUv;
           uv.x = fract(uv.x + uLonOffset);
 
-          // green channel encodes 0..1, mapped to true evap via [uEvapMin, uEvapMax]
           float g = texture2D(uTex, uv).g; // 0..1
           float evap = mix(uEvapMin, uEvapMax, g);
 
-          // red threshold: hide weak evap
           if (evap <= uThreshold) discard;
 
-          // normalized intensity above threshold
           float t = clamp((evap - uThreshold) / (uEvapMax - uThreshold), 0.0, 1.0);
           t = pow(t, uGamma);
 
-          // pure red, brighter as evap increases
           vec3 col = vec3(t, 0.0, 0.0);
-
-          // alpha also increases with evap; keep a soft ramp
           float alpha = clamp(t * uAlphaScale, 0.0, 1.0);
 
-          // tiny dithering to reduce banding
           col += (hash12(gl_FragCoord.xy) - 0.5) * 0.01;
-
           gl_FragColor = vec4(col, alpha);
         }
       `,
-        });
+    });
 
-        const mesh = new THREE.Mesh(geom, mat);
-        mesh.name = "evaporation-layer";
-        mesh.renderOrder = 50;
-        mesh.frustumCulled = false;
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.name = "evaporation-layer";
+    mesh.renderOrder = 50;
+    mesh.frustumCulled = false;
 
-        scene.add(mesh);
-        meshRef.current = mesh;
+    // initial visibility from store too
+    mesh.visible = s.layers.evaporation;
 
-        return () => {
-            meshRef.current = null;
-            mesh.removeFromParent();
-            geom.dispose();
-            mat.dispose();
-            const t = (mat.uniforms.uTex.value as THREE.Texture | null);
-            if (t) t.dispose();
-        };
-    }, [engineReady]);
+    scene.add(mesh);
+    meshRef.current = mesh;
 
-    useEffect(() => {
-        if (!engineReady) return;
-        const mesh = meshRef.current;
-        if (!mesh) return;
+    return () => {
+      meshRef.current = null;
+      mesh.removeFromParent();
+      geom.dispose();
+      mat.dispose();
+      const t = mat.uniforms.uTex.value as THREE.Texture | null;
+      if (t) t.dispose();
+    };
+  }, [engineReady]);
 
-        const mat = mesh.material as THREE.ShaderMaterial;
+  useEffect(() => {
+    if (!engineReady) return;
+    const mesh = meshRef.current;
+    if (!mesh) return;
 
-        // --- initial sync from store ---
-        {
-            const s = useControls.getState();
-            mesh.visible = s.layers.evaporation;
+    const mat = mesh.material as THREE.ShaderMaterial;
 
-            mat.uniforms.uEvapMin.value = s.evap.uEvapMin;
-            mat.uniforms.uEvapMax.value = s.evap.uEvapMax;
-            mat.uniforms.uThreshold.value = s.evap.uThreshold;
-            mat.uniforms.uGamma.value = s.evap.uGamma;
-            mat.uniforms.uAlphaScale.value = s.evap.uAlphaScale;
+    // --- subscribe: visibility ---
+    const unsubVis = useControls.subscribe(
+      (st) => st.layers.evaporation,
+      (v) => {
+        mesh.visible = v;
+      }
+    );
+
+    // --- subscribe: evap params ---
+    const unsubParams = useControls.subscribe(
+      (st) => st.evap,
+      (p) => {
+        mat.uniforms.uEvapMin.value = p.uEvapMin;
+        mat.uniforms.uEvapMax.value = p.uEvapMax;
+        mat.uniforms.uThreshold.value = p.uThreshold;
+        mat.uniforms.uGamma.value = p.uGamma;
+        mat.uniforms.uAlphaScale.value = p.uAlphaScale;
+      }
+    );
+
+    return () => {
+      unsubVis();
+      unsubParams();
+    };
+  }, [engineReady]);
+
+  // update on timestamp: load new png as texture and set uniform
+  useEffect(() => {
+    if (!engineReady) return;
+    const mesh = meshRef.current;
+    if (!mesh) return;
+
+    let cancelled = false;
+    const mat = mesh.material as THREE.ShaderMaterial;
+
+    const url = moistureTransportApiUrl(timestamp);
+
+    new THREE.TextureLoader().load(
+      url,
+      (tex) => {
+        if (cancelled) {
+          tex.dispose();
+          return;
         }
 
-        // --- subscribe: visibility ---
-        const unsubVis = useControls.subscribe(
-            (st) => st.layers.evaporation,
-            (v) => {
-                mesh.visible = v;
-            }
-        );
+        tex.colorSpace = THREE.NoColorSpace;
+        tex.flipY = true;
+        tex.wrapS = THREE.RepeatWrapping;
+        tex.wrapT = THREE.RepeatWrapping;
 
-        // --- subscribe: evap params ---
-        const unsubParams = useControls.subscribe(
-            (st) => st.evap,
-            (p) => {
-                mat.uniforms.uEvapMin.value = p.uEvapMin;
-                mat.uniforms.uEvapMax.value = p.uEvapMax;
-                mat.uniforms.uThreshold.value = p.uThreshold;
-                mat.uniforms.uGamma.value = p.uGamma;
-                mat.uniforms.uAlphaScale.value = p.uAlphaScale;
-            }
-        );
+        const prev = mat.uniforms.uTex.value as THREE.Texture | null;
+        mat.uniforms.uTex.value = tex;
+        mat.needsUpdate = true;
+        if (prev) prev.dispose();
 
-        return () => {
-            unsubVis();
-            unsubParams();
-        };
-    }, [engineReady]);
+        signalReady(timestamp);
+      },
+      undefined,
+      (err) => {
+        console.error("Failed to load evaporation png", err);
+        signalReady(timestamp);
+      }
+    );
 
+    return () => {
+      cancelled = true;
+    };
+  }, [engineReady, timestamp, signalReady]);
 
-    // update on timestamp: load new png as texture and set uniform
-    useEffect(() => {
-        if (!engineReady) return;
-        const mesh = meshRef.current;
-        if (!mesh) return;
-
-        let cancelled = false;
-        const mat = mesh.material as THREE.ShaderMaterial;
-
-        const url = moistureTransportApiUrl(timestamp);
-
-        new THREE.TextureLoader().load(
-            url,
-            (tex) => {
-                if (cancelled) {
-                    tex.dispose();
-                    return;
-                }
-
-                tex.colorSpace = THREE.NoColorSpace;
-                tex.flipY = true;
-                tex.wrapS = THREE.RepeatWrapping;
-                tex.wrapT = THREE.RepeatWrapping;
-
-                const prev = mat.uniforms.uTex.value as THREE.Texture | null;
-                mat.uniforms.uTex.value = tex;
-                mat.needsUpdate = true;
-                if (prev) prev.dispose();
-
-                signalReady(timestamp);
-            },
-            undefined,
-            (err) => {
-                console.error("Failed to load evaporation png", err);
-                signalReady(timestamp);
-            }
-        );
-
-        return () => {
-            cancelled = true;
-        };
-    }, [engineReady, timestamp, signalReady]);
-
-    return null;
+  return null;
 }

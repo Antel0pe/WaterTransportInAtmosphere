@@ -132,7 +132,7 @@ export default function HomeClient() {
 
 
       {/* Optional: click-away scrim when open */}
-      <div
+      {/* <div
         onClick={() => setSidebarOpen(false)}
         style={{
           position: "absolute",
@@ -140,10 +140,10 @@ export default function HomeClient() {
           zIndex: 40,
           pointerEvents: sidebarOpen ? "auto" : "none",
         }}
-      />
+      /> */}
 
       {/* Sidebar overlay drawer */}
-      <aside
+      {/* <aside
         style={{
           position: "absolute",
           top: 0,
@@ -164,7 +164,28 @@ export default function HomeClient() {
         }}
       >
         <SidebarPane />
-      </aside>
+      </aside> */}
+      {/* Sidebar (dock-right, pushes content) */}
+<aside
+  style={{
+    flex: "0 0 auto",
+    width: sidebarOpen ? 420 : 0,
+    maxWidth: "92vw",
+    height: "100%",
+    overflow: "hidden",
+    display: "flex",
+    flexDirection: "column",
+    backdropFilter: "blur(6px)",
+    background: "rgba(18,18,20,0.55)",
+    borderLeft: sidebarOpen ? "1px solid rgba(255,255,255,0.12)" : "none",
+    transition: "width 220ms cubic-bezier(0.2, 0.8, 0.2, 1)",
+    pointerEvents: sidebarOpen ? "auto" : "none",
+  }}
+>
+  {/* only mount when open (optional, avoids tweakpane weirdness when hidden) */}
+  {sidebarOpen ? <SidebarPane /> : null}
+</aside>
+
     </div>
   );
 }
