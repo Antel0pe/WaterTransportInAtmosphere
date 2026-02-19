@@ -107,7 +107,7 @@ export default function TweakpaneControls() {
     // so use tight slider ranges for usability.
     const bEvapMin = evapFolder.addBinding(ui, "uEvapMin", {
       label: "uEvapMin",
-      min: 0.0,
+      min: -0.01,
       max: 0.01,
       step: 0.00001,
     });

@@ -36,12 +36,13 @@ export const useControls = create<ControlsState>()(
     layers: { moisture: true, evaporation: true },
 
     evap: {
-      uEvapMin: 0,
-      uEvapMax: 1,
-      uThreshold: 0.2,
-      uGamma: 1.0,
-      uAlphaScale: 1.0,
+      uEvapMin: -5e-4,
+      uEvapMax: 5e-4,
+      uThreshold: 5e-5,
+      uGamma: 1.5,
+      uAlphaScale: 0.75,
     },
+
 
     moisture: {
       uAnomMin: -50,

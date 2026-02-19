@@ -2,7 +2,7 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { useEarthLayer } from "./EarthBase";
-import { moistureTransportApiUrl } from "../utils/ApiResponses";
+import { evaporationApiUrl } from "../utils/ApiResponses";
 import { useControls } from "../../state/controlsStore";
 
 export default function EvaporationLayer() {
@@ -22,7 +22,6 @@ export default function EvaporationLayer() {
     const LIFT = R * 0.002;
     const geom = new THREE.SphereGeometry(R + LIFT, 128, 128);
 
-    // ⬇️ pull defaults from store (single source of truth)
     const s = useControls.getState();
 
     const mat = new THREE.ShaderMaterial({
@@ -31,13 +30,20 @@ export default function EvaporationLayer() {
       depthTest: true,
       uniforms: {
         uTex: { value: null as THREE.Texture | null },
-        uLonOffset: { value: 0.5 },
+        uLonOffset: { value: 0.25 },
 
-        uEvapMin: { value: s.evap.uEvapMin },
-        uEvapMax: { value: s.evap.uEvapMax },
+        // We now visualize the BLUE channel from the RGB PNG:
+        //   B encodes the anomaly display value: anom_disp = -(inst - clim_per_hour)
+        // The PNG stores 8-bit [0..255] -> texture channels [0..1]
+        // We remap B from [0..1] to anomaly in physical units using min/max.
+        uAnomMin: { value: s.evap.uEvapMin },
+        uAnomMax: { value: s.evap.uEvapMax },
+
+        // display controls
         uThreshold: { value: s.evap.uThreshold },
         uGamma: { value: s.evap.uGamma },
         uAlphaScale: { value: s.evap.uAlphaScale },
+
       },
       vertexShader: `
         varying vec2 vUv;
@@ -50,47 +56,46 @@ export default function EvaporationLayer() {
         uniform sampler2D uTex;
         uniform float uLonOffset;
 
-        uniform float uEvapMin;
-        uniform float uEvapMax;
+        uniform float uAnomMin;
+        uniform float uAnomMax;
+
         uniform float uThreshold;
         uniform float uGamma;
         uniform float uAlphaScale;
 
         varying vec2 vUv;
 
-        float hash12(vec2 p){
-          vec3 p3  = fract(vec3(p.xyx) * 0.1031);
-          p3 += dot(p3, p3.yzx + 33.33);
-          return fract((p3.x + p3.y) * p3.z);
-        }
-
         void main() {
           vec2 uv = vUv;
           uv.x = fract(uv.x + uLonOffset);
 
-          float g = texture2D(uTex, uv).g; // 0..1
-          float evap = mix(uEvapMin, uEvapMax, g);
+          float b01 = texture2D(uTex, uv).b; // 0..1
+          float anom = mix(uAnomMin, uAnomMax, b01); // physical units
 
-          if (evap <= uThreshold) discard;
+          // Keep ONLY "more evap than baseline"
+          // (per your encoding: anom > 0 means more evap than baseline)
+          if (anom <= uThreshold) discard;
 
-          float t = clamp((evap - uThreshold) / (uEvapMax - uThreshold), 0.0, 1.0);
+          // Map anomaly to 0..1 intensity
+          // Use (uAnomMax - uThreshold) as the usable headroom
+          float t = (anom - uThreshold) / max(uAnomMax - uThreshold, 1e-12);
+          t = clamp(t, 0.0, 1.0);
           t = pow(t, uGamma);
 
+          // Simple color: bright blue
           vec3 col = vec3(t, 0.0, 0.0);
           float alpha = clamp(t * uAlphaScale, 0.0, 1.0);
 
-          col += (hash12(gl_FragCoord.xy) - 0.5) * 0.01;
           gl_FragColor = vec4(col, alpha);
         }
       `,
     });
 
     const mesh = new THREE.Mesh(geom, mat);
-    mesh.name = "evaporation-layer";
+    mesh.name = "evaporation-anomaly-layer";
     mesh.renderOrder = 50;
     mesh.frustumCulled = false;
 
-    // initial visibility from store too
     mesh.visible = s.layers.evaporation;
 
     scene.add(mesh);
@@ -113,7 +118,6 @@ export default function EvaporationLayer() {
 
     const mat = mesh.material as THREE.ShaderMaterial;
 
-    // --- subscribe: visibility ---
     const unsubVis = useControls.subscribe(
       (st) => st.layers.evaporation,
       (v) => {
@@ -121,12 +125,11 @@ export default function EvaporationLayer() {
       }
     );
 
-    // --- subscribe: evap params ---
     const unsubParams = useControls.subscribe(
       (st) => st.evap,
       (p) => {
-        mat.uniforms.uEvapMin.value = p.uEvapMin;
-        mat.uniforms.uEvapMax.value = p.uEvapMax;
+        mat.uniforms.uAnomMin.value = p.uEvapMin;
+        mat.uniforms.uAnomMax.value = p.uEvapMax;
         mat.uniforms.uThreshold.value = p.uThreshold;
         mat.uniforms.uGamma.value = p.uGamma;
         mat.uniforms.uAlphaScale.value = p.uAlphaScale;
@@ -139,7 +142,6 @@ export default function EvaporationLayer() {
     };
   }, [engineReady]);
 
-  // update on timestamp: load new png as texture and set uniform
   useEffect(() => {
     if (!engineReady) return;
     const mesh = meshRef.current;
@@ -148,7 +150,7 @@ export default function EvaporationLayer() {
     let cancelled = false;
     const mat = mesh.material as THREE.ShaderMaterial;
 
-    const url = moistureTransportApiUrl(timestamp);
+    const url = evaporationApiUrl(timestamp);
 
     new THREE.TextureLoader().load(
       url,

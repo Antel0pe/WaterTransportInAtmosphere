@@ -1,5 +1,5 @@
-export function moistureTransportApiUrl(datehour: string) {
-  return `/api/moisture_transport/${encodeURIComponent(datehour)}`;
+export function evaporationApiUrl(datehour: string) {
+  return `/api/evaporation/${encodeURIComponent(datehour)}`;
 }
 
 export function totalColumnWaterApiUrl(datehour: string) {

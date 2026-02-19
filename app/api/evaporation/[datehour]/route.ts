@@ -1,4 +1,4 @@
-// app/api/moisture_transport/[datehour]/route.ts
+// app/api/evaporation/[datehour]/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
@@ -102,7 +102,7 @@ export async function GET(
   const imgDir = path.join(
     process.cwd(),
     "public",
-    "waterTransport-evap-precip-waterColumn"
+    "evap_rgb_instant_clim_anom"
   );
 
   // Determine bounds from files present in the directory.

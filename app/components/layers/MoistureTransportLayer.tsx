@@ -31,7 +31,7 @@ export default function MoistureTransportLayer() {
       depthTest: true,
       uniforms: {
         uTex: { value: null as THREE.Texture | null },
-        uLonOffset: { value: 0.5 }, // if you rolled lon in python by half
+        uLonOffset: { value: 0.25 }, // if you rolled lon in python by half
 
         uAnomMin: { value: s.moisture.uAnomMin },
         uAnomMax: { value: s.moisture.uAnomMax },
