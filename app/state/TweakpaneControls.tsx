@@ -21,23 +21,27 @@ export default function TweakpaneControls() {
 
     // Tweakpane binds to this mutable object
     const ui = {
-      // layer toggles
       moisture: s0.layers.moisture,
       evaporation: s0.layers.evaporation,
+      ivt: s0.layers.ivt,
 
-      // moisture params
       uAnomMin: s0.moisture.uAnomMin,
       uAnomMax: s0.moisture.uAnomMax,
       moistureThreshold: s0.moisture.uThreshold,
       moistureGamma: s0.moisture.uGamma,
 
-      // evap params
       uEvapMin: s0.evap.uEvapMin,
       uEvapMax: s0.evap.uEvapMax,
       evapThreshold: s0.evap.uThreshold,
       evapGamma: s0.evap.uGamma,
       uAlphaScale: s0.evap.uAlphaScale,
+
+      uIvtMin: s0.ivt.uIvtMin,
+      uIvtMax: s0.ivt.uIvtMax,
+      ivtScale: s0.ivt.uScale,
+      ivtGamma: s0.ivt.uGamma,
     };
+
 
     // ---- Layers ----
     const layersFolder = pane.addFolder({ title: "Layers" });
@@ -156,6 +160,54 @@ export default function TweakpaneControls() {
       useControls.getState().setEvap({ uAlphaScale: Number(e.value) });
     });
 
+    const bIVT = layersFolder.addBinding(ui, "ivt", { label: "IVT" });
+    bIVT.on("change", (e) => {
+      useControls.getState().setLayer("ivt", !!e.value);
+    });
+
+    const ivtFolder = pane.addFolder({ title: "IVT Params" });
+
+    const bIvtMin = ivtFolder.addBinding(ui, "uIvtMin", {
+      label: "uIvtMin",
+      min: 0.0,
+      max: 1.0,
+      step: 0.01,
+    });
+
+    const bIvtMax = ivtFolder.addBinding(ui, "uIvtMax", {
+      label: "uIvtMax",
+      min: 0.0,
+      max: 2.0,
+      step: 0.01,
+    });
+
+    const bIvtScale = ivtFolder.addBinding(ui, "ivtScale", {
+      label: "scale",
+      min: 0.1,
+      max: 5.0,
+      step: 0.05,
+    });
+
+    const bIvtGamma = ivtFolder.addBinding(ui, "ivtGamma", {
+      label: "gamma",
+      min: 0.1,
+      max: 3.0,
+      step: 0.05,
+    });
+    bIvtMin.on("change", (e) => {
+      useControls.getState().setIVT({ uIvtMin: Number(e.value) });
+    });
+    bIvtMax.on("change", (e) => {
+      useControls.getState().setIVT({ uIvtMax: Number(e.value) });
+    });
+    bIvtScale.on("change", (e) => {
+      useControls.getState().setIVT({ uScale: Number(e.value) });
+    });
+    bIvtGamma.on("change", (e) => {
+      useControls.getState().setIVT({ uGamma: Number(e.value) });
+    });
+
+
     // ---- subscriptions: keep tweakpane in sync if store changes elsewhere ----
     const unsubMoistureVis = useControls.subscribe(
       (s) => s.layers.moisture,
@@ -196,6 +248,26 @@ export default function TweakpaneControls() {
       }
     );
 
+    const unsubIVTVis = useControls.subscribe(
+      (s) => s.layers.ivt,
+      (v) => {
+        ui.ivt = v;
+        pane.refresh();
+      }
+    );
+
+    const unsubIVTParams = useControls.subscribe(
+      (s) => s.ivt,
+      (p) => {
+        ui.uIvtMin = p.uIvtMin;
+        ui.uIvtMax = p.uIvtMax;
+        ui.ivtScale = p.uScale;
+        ui.ivtGamma = p.uGamma;
+        pane.refresh();
+      }
+    );
+
+
     pane.element.style.width = "100%";
 
     return () => {
@@ -203,6 +275,9 @@ export default function TweakpaneControls() {
       unsubEvapVis();
       unsubMoistureParams();
       unsubEvapParams();
+      unsubIVTVis();
+      unsubIVTParams();
+
       pane.dispose();
       pane.element.remove();
     };

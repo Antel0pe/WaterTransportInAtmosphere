@@ -4,6 +4,7 @@ import { subscribeWithSelector } from "zustand/middleware";
 type LayerToggles = {
   moisture: boolean;
   evaporation: boolean;
+  ivt: boolean;
 };
 
 type EvapParams = {
@@ -21,19 +22,29 @@ type MoistureParams = {
   uGamma: number;
 };
 
+type IVTParams = {
+  uIvtMin: number;   // NEW (0.0)
+  uIvtMax: number;   // NEW (0.8)
+  uScale: number;    // NEW
+  uGamma: number;    // NEW
+};
+
+
 type ControlsState = {
   layers: LayerToggles;
   evap: EvapParams;
   moisture: MoistureParams;
+  ivt: IVTParams;
 
   setLayer: (k: keyof LayerToggles, v: boolean) => void;
   setEvap: (patch: Partial<EvapParams>) => void;
   setMoisture: (patch: Partial<MoistureParams>) => void;
+  setIVT: (patch: Partial<IVTParams>) => void;
 };
 
 export const useControls = create<ControlsState>()(
   subscribeWithSelector((set) => ({
-    layers: { moisture: true, evaporation: true },
+    layers: { moisture: true, evaporation: true, ivt: true },
 
     evap: {
       uEvapMin: -5e-4,
@@ -51,6 +62,13 @@ export const useControls = create<ControlsState>()(
       uGamma: 1.0,
     },
 
+    ivt: {
+      uIvtMin: 0.0,
+      uIvtMax: 0.8,
+      uScale: 1.25,
+      uGamma: 0.85,
+    },
+
     setLayer: (k, v) =>
       set((s) => ({ layers: { ...s.layers, [k]: v } })),
 
@@ -59,5 +77,9 @@ export const useControls = create<ControlsState>()(
 
     setMoisture: (patch) =>
       set((s) => ({ moisture: { ...s.moisture, ...patch } })),
+
+    setIVT: (patch) =>
+      set((s) => ({ ivt: { ...s.ivt, ...patch } })),
+
   }))
 );

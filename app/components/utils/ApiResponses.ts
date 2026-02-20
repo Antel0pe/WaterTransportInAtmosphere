@@ -5,3 +5,7 @@ export function evaporationApiUrl(datehour: string) {
 export function totalColumnWaterApiUrl(datehour: string) {
   return `/api/total_column_water/${encodeURIComponent(datehour)}`;
 }
+
+export function ivtApiUrl(datehour: string) {
+  return `/api/ivt/${encodeURIComponent(datehour)}`;
+}

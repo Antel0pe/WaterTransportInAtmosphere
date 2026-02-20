@@ -20,6 +20,11 @@ const EvaporationLayer = dynamic(() => import("./layers/EvaporationLayer"), {
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
 
+const IVTLayer = dynamic(() => import("./layers/IVT_Layer"), {
+  ssr: false,
+  loading: () => <div style={{ width: "100%", height: "100%" }} />,
+});
+
 
 const TimeSlider = dynamic(() => import("./TimeSlider"), {
   ssr: false,
@@ -63,6 +68,7 @@ export default function HomeClient() {
           >
             <MoistureTransportLayer />
             <EvaporationLayer />
+            <IVTLayer />
           </EarthBase>
         </div>
 
@@ -166,25 +172,25 @@ export default function HomeClient() {
         <SidebarPane />
       </aside> */}
       {/* Sidebar (dock-right, pushes content) */}
-<aside
-  style={{
-    flex: "0 0 auto",
-    width: sidebarOpen ? 420 : 0,
-    maxWidth: "92vw",
-    height: "100%",
-    overflow: "hidden",
-    display: "flex",
-    flexDirection: "column",
-    backdropFilter: "blur(6px)",
-    background: "rgba(18,18,20,0.55)",
-    borderLeft: sidebarOpen ? "1px solid rgba(255,255,255,0.12)" : "none",
-    transition: "width 220ms cubic-bezier(0.2, 0.8, 0.2, 1)",
-    pointerEvents: sidebarOpen ? "auto" : "none",
-  }}
->
-  {/* only mount when open (optional, avoids tweakpane weirdness when hidden) */}
-  {sidebarOpen ? <SidebarPane /> : null}
-</aside>
+      <aside
+        style={{
+          flex: "0 0 auto",
+          width: sidebarOpen ? 420 : 0,
+          maxWidth: "92vw",
+          height: "100%",
+          overflow: "hidden",
+          display: "flex",
+          flexDirection: "column",
+          backdropFilter: "blur(6px)",
+          background: "rgba(18,18,20,0.55)",
+          borderLeft: sidebarOpen ? "1px solid rgba(255,255,255,0.12)" : "none",
+          transition: "width 220ms cubic-bezier(0.2, 0.8, 0.2, 1)",
+          pointerEvents: sidebarOpen ? "auto" : "none",
+        }}
+      >
+        {/* only mount when open (optional, avoids tweakpane weirdness when hidden) */}
+        {sidebarOpen ? <SidebarPane /> : null}
+      </aside>
 
     </div>
   );
