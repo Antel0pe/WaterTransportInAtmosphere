@@ -25,6 +25,12 @@ const IVTLayer = dynamic(() => import("./layers/IVT_Layer"), {
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
 
+const MslContoursLayer = dynamic(() => import("./layers/MslContoursLayer"), {
+  ssr: false,
+  loading: () => <div style={{ width: "100%", height: "100%" }} />,
+});
+
+
 
 const TimeSlider = dynamic(() => import("./TimeSlider"), {
   ssr: false,
@@ -69,6 +75,7 @@ export default function HomeClient() {
             <MoistureTransportLayer />
             <EvaporationLayer />
             <IVTLayer />
+            <MslContoursLayer />
           </EarthBase>
         </div>
 

@@ -1,0 +1,230 @@
+// MslContoursLayer.tsx
+import { useEffect, useRef } from "react";
+import * as THREE from "three";
+import { useEarthLayer } from "./EarthBase";
+import { useControls } from "../../state/controlsStore";
+import { fetchMslContours, type MslContoursFile } from "../utils/ApiResponses";
+import { latLonToVec3 } from "../utils/EarthUtils";
+
+export default function MslContoursLayer() {
+  const { engineReady, sceneRef, globeRef, timestamp, signalReady } =
+    useEarthLayer("msl_contours");
+
+  const groupRef = useRef<THREE.Group | null>(null);
+  const matsRef = useRef<Map<string, THREE.LineBasicMaterial>>(new Map());
+
+  useEffect(() => {
+    if (!engineReady) return;
+    if (!sceneRef.current || !globeRef.current) return;
+
+    const scene = sceneRef.current;
+
+    const g = new THREE.Group();
+    g.name = "msl-contours-layer";
+    g.renderOrder = 60;
+    g.frustumCulled = false;
+
+    const s = useControls.getState();
+    g.visible = (s.layers as any).mslContours ?? true;
+
+    scene.add(g);
+    groupRef.current = g;
+
+    const unsubVis = useControls.subscribe(
+      (st) => (st.layers as any).mslContours as boolean,
+      (v) => {
+        g.visible = !!v;
+      }
+    );
+
+    return () => {
+      unsubVis();
+
+      groupRef.current = null;
+
+      g.removeFromParent();
+
+      g.traverse((obj) => {
+        if (obj instanceof THREE.Line) {
+          (obj.geometry as THREE.BufferGeometry).dispose();
+        }
+      });
+
+      for (const mat of matsRef.current.values()) mat.dispose();
+      matsRef.current.clear();
+    };
+  }, [engineReady]);
+
+  useEffect(() => {
+    if (!engineReady) return;
+
+    const g = groupRef.current;
+    const globe = globeRef.current;
+    if (!g || !globe) return;
+
+    let cancelled = false;
+
+    function clearGroup(group: THREE.Group) {
+      const kids = [...group.children];
+      for (const obj of kids) {
+        obj.removeFromParent();
+        if (obj instanceof THREE.Line) {
+          (obj.geometry as THREE.BufferGeometry).dispose();
+        }
+      }
+    }
+
+    function clearMaterialCache() {
+      for (const mat of matsRef.current.values()) mat.dispose();
+      matsRef.current.clear();
+    }
+
+    function computeMinMaxHpa(file: MslContoursFile): { min: number; max: number } {
+      // const keys = Object.keys(file.levels);
+      // let mn = Infinity;
+      // let mx = -Infinity;
+      // for (const k of keys) {
+      //   const v = parseFloat(k);
+      //   if (!Number.isFinite(v)) continue;
+      //   if (v < mn) mn = v;
+      //   if (v > mx) mx = v;
+      // }
+      // if (!Number.isFinite(mn) || !Number.isFinite(mx) || mn === mx) {
+      //   return { min: 920, max: 1060 };
+      // }
+      // return { min: mn, max: mx };
+      return { min: 920, max: 1060 };
+    }
+
+    function applyContrast(t: number, contrast: number) {
+      const x = (t - 0.5) * contrast + 0.5;
+      return THREE.MathUtils.clamp(x, 0, 1);
+    }
+
+    function levelToColor(
+      levelHpa: number,
+      minHpa: number,
+      maxHpa: number,
+      contrast: number
+    ): THREE.Color {
+      let t = (levelHpa - minHpa) / (maxHpa - minHpa);
+      t = THREE.MathUtils.clamp(t, 0, 1);
+      t = applyContrast(t, contrast);
+
+      const red = new THREE.Color(1, 0, 0);
+      const blue = new THREE.Color(0, 0, 1);
+      return red.clone().lerp(blue, t);
+    }
+
+    function addContours(group: THREE.Group, file: MslContoursFile, R: number) {
+      const LIFT = R * 0.002;
+
+      const { min, max } = computeMinMaxHpa(file);
+
+      const s = useControls.getState();
+      const contrast = (s as any).mslContours?.contrast ?? 3.5;
+      const opacity = (s as any).mslContours?.opacity ?? 0.95;
+
+      const levelKeys = Object.keys(file.levels).sort(
+        (a, b) => parseFloat(a) - parseFloat(b)
+      );
+
+      const getMaterialForLevel = (levelKey: string) => {
+        const cached = matsRef.current.get(levelKey);
+        if (cached) return cached;
+
+        const levelHpa = parseFloat(levelKey);
+        const col = levelToColor(levelHpa, min, max, contrast);
+
+        const mat = new THREE.LineBasicMaterial({
+          transparent: true,
+          opacity,
+          depthTest: true,
+          depthWrite: false,
+          color: col,
+        });
+
+        matsRef.current.set(levelKey, mat);
+        return mat;
+      };
+
+      for (const levelKey of levelKeys) {
+        const lines = file.levels[levelKey];
+        if (!lines || lines.length === 0) continue;
+
+        const material = getMaterialForLevel(levelKey);
+
+        for (const line of lines) {
+          if (!line || line.length < 2) continue;
+
+          const positions = new Float32Array(line.length * 3);
+
+          for (let i = 0; i < line.length; i++) {
+            const [lonDeg, latDeg] = line[i];
+            const v = latLonToVec3(latDeg, lonDeg, R + LIFT);
+
+            const j = i * 3;
+            positions[j + 0] = v.x;
+            positions[j + 1] = v.y;
+            positions[j + 2] = v.z;
+          }
+
+          const geom = new THREE.BufferGeometry();
+          geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+
+          const threeLine = new THREE.Line(geom, material);
+          threeLine.frustumCulled = false;
+
+          group.add(threeLine);
+        }
+      }
+    }
+
+    (async () => {
+      try {
+        clearGroup(g);
+        clearMaterialCache();
+
+        const file = await fetchMslContours(timestamp);
+        if (cancelled) return;
+
+        const R = 100;
+        addContours(g, file, R);
+
+        signalReady(timestamp);
+      } catch (err) {
+        console.error("Failed to load/draw MSL contours", err);
+        signalReady(timestamp);
+      }
+    })();
+
+    const unsubParams = useControls.subscribe(
+      (st) => (st as any).mslContours as { contrast: number; opacity: number },
+      () => {
+        // params changed -> rebuild colors/opacities
+        if (cancelled) return;
+        (async () => {
+          try {
+            clearGroup(g);
+            clearMaterialCache();
+
+            const file = await fetchMslContours(timestamp);
+            if (cancelled) return;
+
+            const R = 100;
+            addContours(g, file, R);
+          } catch (err) {
+            console.error("Failed to redraw MSL contours after param change", err);
+          }
+        })();
+      }
+    );
+
+    return () => {
+      cancelled = true;
+      unsubParams();
+    };
+  }, [engineReady, timestamp, signalReady]);
+
+  return null;
+}

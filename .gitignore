@@ -4,6 +4,7 @@ data/
 /public/tcw_rgb_instant_clim_anom/*
 /public/evap_rgb_instant_clim_anom/*
 /public/ivt-925-1000/*
+/public/msl_contours/*
 # dependencies
 /node_modules
 /.pnp

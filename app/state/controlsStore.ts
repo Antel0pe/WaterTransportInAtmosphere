@@ -5,8 +5,8 @@ type LayerToggles = {
   moisture: boolean;
   evaporation: boolean;
   ivt: boolean;
+  mslContours: boolean;
 };
-
 type EvapParams = {
   uEvapMin: number;
   uEvapMax: number;
@@ -29,22 +29,34 @@ type IVTParams = {
   uGamma: number;    // NEW
 };
 
+type MslContoursParams = {
+  contrast: number;
+  opacity: number;
+};
+
 
 type ControlsState = {
   layers: LayerToggles;
   evap: EvapParams;
   moisture: MoistureParams;
   ivt: IVTParams;
+  mslContours: MslContoursParams;
 
   setLayer: (k: keyof LayerToggles, v: boolean) => void;
   setEvap: (patch: Partial<EvapParams>) => void;
   setMoisture: (patch: Partial<MoistureParams>) => void;
   setIVT: (patch: Partial<IVTParams>) => void;
+  setMslContours: (patch: Partial<MslContoursParams>) => void;
 };
 
 export const useControls = create<ControlsState>()(
   subscribeWithSelector((set) => ({
-    layers: { moisture: true, evaporation: true, ivt: true },
+    layers: { moisture: true, evaporation: true, ivt: true, mslContours: true },
+
+    mslContours: {
+      contrast: 3.5,
+      opacity: 0.95,
+    },
 
     evap: {
       uEvapMin: -5e-4,
@@ -81,5 +93,7 @@ export const useControls = create<ControlsState>()(
     setIVT: (patch) =>
       set((s) => ({ ivt: { ...s.ivt, ...patch } })),
 
+    setMslContours: (patch) =>
+      set((s) => ({ mslContours: { ...s.mslContours, ...patch } })),
   }))
 );

@@ -40,6 +40,11 @@ export default function TweakpaneControls() {
       uIvtMax: s0.ivt.uIvtMax,
       ivtScale: s0.ivt.uScale,
       ivtGamma: s0.ivt.uGamma,
+
+      mslContours: s0.layers.mslContours,
+
+      mslContrast: s0.mslContours.contrast,
+      mslOpacity: s0.mslContours.opacity,
     };
 
 
@@ -263,6 +268,46 @@ export default function TweakpaneControls() {
         ui.uIvtMax = p.uIvtMax;
         ui.ivtScale = p.uScale;
         ui.ivtGamma = p.uGamma;
+        pane.refresh();
+      }
+    );
+
+    const bMslContours = layersFolder.addBinding(ui, "mslContours", { label: "MSL Contours" });
+    bMslContours.on("change", (e) => {
+      useControls.getState().setLayer("mslContours", !!e.value);
+    });
+
+    const mslFolder = pane.addFolder({ title: "MSL Contours Params" });
+
+    const bMslContrast = mslFolder.addBinding(ui, "mslContrast", {
+      label: "contrast",
+      min: 1.0,
+      max: 8.0,
+      step: 0.1,
+    });
+    const bMslOpacity = mslFolder.addBinding(ui, "mslOpacity", {
+      label: "opacity",
+      min: 0.0,
+      max: 1.0,
+      step: 0.01,
+    });
+
+    bMslContrast.on("change", (e) => useControls.getState().setMslContours({ contrast: Number(e.value) }));
+    bMslOpacity.on("change", (e) => useControls.getState().setMslContours({ opacity: Number(e.value) }));
+
+    const unsubMslVis = useControls.subscribe(
+      (s) => s.layers.mslContours,
+      (v) => {
+        ui.mslContours = v;
+        pane.refresh();
+      }
+    );
+
+    const unsubMslParams = useControls.subscribe(
+      (s) => s.mslContours,
+      (p) => {
+        ui.mslContrast = p.contrast;
+        ui.mslOpacity = p.opacity;
         pane.refresh();
       }
     );
