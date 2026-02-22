@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 
-type LayerToggles = {
+export type LayerToggles = {
   moisture: boolean;
   evaporation: boolean;
   ivt: boolean;
@@ -68,9 +68,9 @@ export const useControls = create<ControlsState>()(
 
 
     moisture: {
-      uAnomMin: -50,
-      uAnomMax: 50,
-      uThreshold: 10,
+      uAnomMin: 0,
+      uAnomMax: 100,
+      uThreshold: 20,
       uGamma: 1.0,
     },
 

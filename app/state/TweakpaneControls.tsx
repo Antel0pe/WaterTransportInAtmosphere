@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { Pane } from "tweakpane";
-import { useControls } from "../state/controlsStore";
+import { LayerToggles, useControls } from "../state/controlsStore";
 
 export default function TweakpaneControls() {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -47,6 +47,54 @@ export default function TweakpaneControls() {
       mslOpacity: s0.mslContours.opacity,
     };
 
+    // ---- Reset ----
+    const defaults = {
+      layers: { ...s0.layers },
+      moisture: { ...s0.moisture },
+      evap: { ...s0.evap },
+      ivt: { ...s0.ivt },
+      mslContours: { ...s0.mslContours },
+    };
+
+    pane.addButton({ title: "Reset to defaults" }).on("click", () => {
+      const st = useControls.getState();
+
+      // update store
+      (Object.keys(defaults.layers) as (keyof LayerToggles)[]).forEach((k) => {
+        st.setLayer(k, defaults.layers[k]);
+      });
+      st.setMoisture(defaults.moisture);
+      st.setEvap(defaults.evap);
+      st.setIVT(defaults.ivt);
+      st.setMslContours(defaults.mslContours);
+
+      // update tweakpane-bound object immediately
+      ui.moisture = defaults.layers.moisture;
+      ui.evaporation = defaults.layers.evaporation;
+      ui.ivt = defaults.layers.ivt;
+      ui.mslContours = defaults.layers.mslContours;
+
+      ui.uAnomMin = defaults.moisture.uAnomMin;
+      ui.uAnomMax = defaults.moisture.uAnomMax;
+      ui.moistureThreshold = defaults.moisture.uThreshold;
+      ui.moistureGamma = defaults.moisture.uGamma;
+
+      ui.uEvapMin = defaults.evap.uEvapMin;
+      ui.uEvapMax = defaults.evap.uEvapMax;
+      ui.evapThreshold = defaults.evap.uThreshold;
+      ui.evapGamma = defaults.evap.uGamma;
+      ui.uAlphaScale = defaults.evap.uAlphaScale;
+
+      ui.uIvtMin = defaults.ivt.uIvtMin;
+      ui.uIvtMax = defaults.ivt.uIvtMax;
+      ui.ivtScale = defaults.ivt.uScale;
+      ui.ivtGamma = defaults.ivt.uGamma;
+
+      ui.mslContrast = defaults.mslContours.contrast;
+      ui.mslOpacity = defaults.mslContours.opacity;
+
+      pane.refresh();
+    });
 
     // ---- Layers ----
     const layersFolder = pane.addFolder({ title: "Layers" });
@@ -322,6 +370,9 @@ export default function TweakpaneControls() {
       unsubEvapParams();
       unsubIVTVis();
       unsubIVTParams();
+      unsubMslVis();
+      unsubMslParams();
+
 
       pane.dispose();
       pane.element.remove();

@@ -105,7 +105,7 @@ export async function GET(
   const hourly = snapToHour(target);
   const filename = toPngFilename(hourly);
 
-  const imgDir = path.join(process.cwd(), "public", "tcw_rgb_instant_clim_anom");
+  const imgDir = path.join(process.cwd(), "public", "waterTransport-evap-precip-waterColumn");
 
   // Determine bounds from files present in the directory.
   let files: string[];

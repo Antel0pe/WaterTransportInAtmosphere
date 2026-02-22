@@ -199,7 +199,7 @@ export default function MslContoursLayer() {
     })();
 
     const unsubParams = useControls.subscribe(
-      (st) => (st as any).mslContours as { contrast: number; opacity: number },
+      (st) => st.mslContours as { contrast: number; opacity: number },
       () => {
         // params changed -> rebuild colors/opacities
         if (cancelled) return;
