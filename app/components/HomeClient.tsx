@@ -30,7 +30,15 @@ const MslContoursLayer = dynamic(() => import("./layers/MslContoursLayer"), {
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
 
+const WindUVArrowsLayer = dynamic(() => import("./layers/WindUVArrowsLayer"), {
+  ssr: false,
+  loading: () => <div style={{ width: "100%", height: "100%" }} />,
+});
 
+const WindTrailParticlesLayer = dynamic(() => import("./layers/WindTrailParticlesLayer"), {
+  ssr: false,
+  loading: () => <div style={{ width: "100%", height: "100%" }} />,
+});
 
 const TimeSlider = dynamic(() => import("./TimeSlider"), {
   ssr: false,
@@ -38,7 +46,7 @@ const TimeSlider = dynamic(() => import("./TimeSlider"), {
 });
 
 export default function HomeClient() {
-  const [datehour, setDatehour] = useState(() => "2021-11-22T00:00");
+  const [datehour, setDatehour] = useState(() => "2021-11-12T03:00");
   const [allReady, setAllReady] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
@@ -76,6 +84,8 @@ export default function HomeClient() {
             <EvaporationLayer />
             <IVTLayer />
             <MslContoursLayer />
+            <WindUVArrowsLayer />
+            {/* <WindTrailParticlesLayer pressureLevel={925} heightTex={null}/> */}
           </EarthBase>
         </div>
 

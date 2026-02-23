@@ -72,14 +72,14 @@ fragmentShader: `
     // normalized intensity above threshold
     float t = clamp((anom - uThreshold) / (uAnomMax - uThreshold), 0.0, 1.0);
     t = pow(t, uGamma);
+    
+// --- color palette (electric violet) ---
+vec3 deep = vec3(0.20, 0.00, 0.35);  // #33005A-ish
+vec3 mid  = vec3(0.85, 0.20, 1.00);  // #D933FF
+vec3 hot  = vec3(1.00, 0.78, 1.00);  // #FFC7FF
 
-    // --- color palette (reads over ocean) ---
-    vec3 deep = vec3(0.02, 0.18, 0.22);
-    vec3 mid  = vec3(0.10, 0.85, 0.72);
-    vec3 hot  = vec3(1.00, 0.90, 0.55);
-
-    vec3 col = mix(deep, mid, smoothstep(0.15, 0.60, t));
-    col = mix(col, hot, smoothstep(0.65, 1.00, t));
+vec3 col = mix(deep, mid, smoothstep(0.15, 0.60, t));
+col = mix(col, hot, smoothstep(0.65, 1.00, t));
 
     // simple alpha from intensity
     float alpha = smoothstep(0.05, 0.15, t);

@@ -25,13 +25,13 @@ export default function MslContoursLayer() {
     g.frustumCulled = false;
 
     const s = useControls.getState();
-    g.visible = (s.layers as any).mslContours ?? true;
+    g.visible = s.layers.mslContours;
 
     scene.add(g);
     groupRef.current = g;
 
     const unsubVis = useControls.subscribe(
-      (st) => (st.layers as any).mslContours as boolean,
+      (st) => st.layers.mslContours,
       (v) => {
         g.visible = !!v;
       }
@@ -46,7 +46,7 @@ export default function MslContoursLayer() {
 
       g.traverse((obj) => {
         if (obj instanceof THREE.Line) {
-          (obj.geometry as THREE.BufferGeometry).dispose();
+          obj.geometry.dispose();
         }
       });
 
@@ -69,7 +69,7 @@ export default function MslContoursLayer() {
       for (const obj of kids) {
         obj.removeFromParent();
         if (obj instanceof THREE.Line) {
-          (obj.geometry as THREE.BufferGeometry).dispose();
+          obj.geometry.dispose();
         }
       }
     }
@@ -100,7 +100,6 @@ export default function MslContoursLayer() {
       const x = (t - 0.5) * contrast + 0.5;
       return THREE.MathUtils.clamp(x, 0, 1);
     }
-
     function levelToColor(
       levelHpa: number,
       minHpa: number,
@@ -111,9 +110,11 @@ export default function MslContoursLayer() {
       t = THREE.MathUtils.clamp(t, 0, 1);
       t = applyContrast(t, contrast);
 
-      const red = new THREE.Color(1, 0, 0);
-      const blue = new THREE.Color(0, 0, 1);
-      return red.clone().lerp(blue, t);
+      // simple + high-contrast: red (low) -> green (high), pushed apart
+      const red = new THREE.Color(1.0, 0.0, 0.35);   // slightly magenta-red (pops on ocean)
+      const green = new THREE.Color(0.0, 1.0, 0.15); // slightly yellow-green (also pops)
+
+      return red.clone().lerp(green, t);
     }
 
     function addContours(group: THREE.Group, file: MslContoursFile, R: number) {
@@ -122,8 +123,8 @@ export default function MslContoursLayer() {
       const { min, max } = computeMinMaxHpa(file);
 
       const s = useControls.getState();
-      const contrast = (s as any).mslContours?.contrast ?? 3.5;
-      const opacity = (s as any).mslContours?.opacity ?? 0.95;
+      const contrast = s.mslContours.contrast;
+      const opacity = s.mslContours.opacity;
 
       const levelKeys = Object.keys(file.levels).sort(
         (a, b) => parseFloat(a) - parseFloat(b)
@@ -196,10 +197,10 @@ export default function MslContoursLayer() {
         console.error("Failed to load/draw MSL contours", err);
         signalReady(timestamp);
       }
-    })();
+    })(); 
 
     const unsubParams = useControls.subscribe(
-      (st) => st.mslContours as { contrast: number; opacity: number },
+      (st) => st.mslContours,
       () => {
         // params changed -> rebuild colors/opacities
         if (cancelled) return;

@@ -51,7 +51,7 @@ type ControlsState = {
 
 export const useControls = create<ControlsState>()(
   subscribeWithSelector((set) => ({
-    layers: { moisture: true, evaporation: true, ivt: true, mslContours: true },
+    layers: { moisture: true, evaporation: false, ivt: false, mslContours: true },
 
     mslContours: {
       contrast: 3.5,

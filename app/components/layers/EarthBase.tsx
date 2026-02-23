@@ -24,6 +24,9 @@ export type EarthEngine = {
     signalLayerReady: (ts: string, key: string) => void;
 
     allLayersReady: boolean;
+
+    registerFramePass: (key: string, pass: FramePass) => void;
+    unregisterFramePass: (key: string) => void;
 };
 
 const EarthContext = createContext<EarthEngine | null>(null);
@@ -36,19 +39,27 @@ function useEarth() {
 
 export function useEarthLayer(key: string) {
     const earth = useEarth();
-
+    const { registerLayer, unregisterLayer, signalLayerReady } = earth;
     useEffect(() => {
-        earth.registerLayer(key);
-        return () => earth.unregisterLayer(key);
-        }, [earth.registerLayer, earth.unregisterLayer, key]);
+        registerLayer(key);
+        return () => unregisterLayer(key);
+    }, [registerLayer, unregisterLayer, key]);
 
     const signalReady = useCallback(
-        (ts: string) => earth.signalLayerReady(ts, key),
-        [earth, key]
+        (ts: string) => signalLayerReady(ts, key),
+        [signalLayerReady, key]
     );
 
     return { ...earth, signalReady };
 }
+
+export type FrameTick = {
+    dt: number;        // seconds
+    t: number;         // performance.now() ms
+    timestamp: string; // current EarthBase timestamp
+};
+
+export type FramePass = (tick: FrameTick) => void;
 
 
 type Props = {
@@ -72,6 +83,7 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
 
     const [allLayersReady, setAllLayersReady] = useState(false);
 
+    const framePassesRef = useRef(new Map<string, FramePass>());
 
     // recompute helper
     const recomputeAllReady = useCallback(() => {
@@ -118,6 +130,14 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
     useEffect(() => {
         onAllReadyChange?.(allLayersReady, timestamp);
     }, [allLayersReady, timestamp, onAllReadyChange]);
+
+    const registerFramePass = useCallback((key: string, pass: FramePass) => {
+        framePassesRef.current.set(key, pass);
+    }, []);
+
+    const unregisterFramePass = useCallback((key: string) => {
+        framePassesRef.current.delete(key);
+    }, []);
 
 
 
@@ -168,7 +188,7 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
         controls.update();
         renderer.render(scene, camera);
 
-        lookAtLatLon(30, -115, camera, controls, globe, 100);
+        lookAtLatLon(30, -135, camera, controls, globe, 100);
 
         scene.add(new THREE.AmbientLight(0xffffff, 2));
         const sun = null;
@@ -486,8 +506,50 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
 
         let running = true;
 
+        let lastT = performance.now();
+
+        function runFramePassSafely(pass: FramePass, tick: FrameTick) {
+            if (!renderer) return;
+
+            // Snapshot the state that commonly gets mutated.
+            const prevRT = renderer.getRenderTarget();
+            const prevViewport = new THREE.Vector4();
+            const prevScissor = new THREE.Vector4();
+            const prevScissorTest = renderer.getScissorTest();
+
+            renderer.getViewport(prevViewport);
+            renderer.getScissor(prevScissor);
+
+            // (Optional but useful if your passes use these)
+            const prevAutoClear = renderer.autoClear;
+            const prevClearAlpha = renderer.getClearAlpha();
+            const prevClearColor = new THREE.Color();
+            renderer.getClearColor(prevClearColor);
+
+            try {
+                pass(tick);
+            } catch (err) {
+                console.error("[FramePass] failed:", err);
+            } finally {
+                // Restore state so the next pass starts clean.
+                renderer.setRenderTarget(prevRT);
+                renderer.setViewport(prevViewport.x, prevViewport.y, prevViewport.z, prevViewport.w);
+                renderer.setScissor(prevScissor.x, prevScissor.y, prevScissor.z, prevScissor.w);
+                renderer.setScissorTest(prevScissorTest);
+
+                renderer.autoClear = prevAutoClear;
+                renderer.setClearColor(prevClearColor, prevClearAlpha);
+            }
+        }
+
         const loop = () => {
             if (!running) return;
+
+            const now = performance.now();
+            // const dt = Math.min(0.05, (now - lastT) / 1000);
+            // const dt = (now - lastT) / 1000;
+            const dt = 15;
+            lastT = now;
 
             // stash viewport/scissor once
             const prevViewport = new THREE.Vector4();
@@ -495,6 +557,12 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
             const prevScissorTest = renderer.getScissorTest();
             renderer.getViewport(prevViewport);
             renderer.getScissor(prevScissor);
+
+            const tick: FrameTick = { dt, t: now, timestamp };
+
+            for (const pass of framePassesRef.current.values()) {
+                runFramePassSafely(pass, tick);
+            }
 
             // restore viewport/scissor exactly
             renderer.setViewport(prevViewport.x, prevViewport.y, prevViewport.z, prevViewport.w);
@@ -526,6 +594,8 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
         unregisterLayer,
         signalLayerReady,
         allLayersReady,
+        registerFramePass,
+        unregisterFramePass,
     }), [
         engineReady,
         timestamp,
@@ -533,6 +603,8 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
         registerLayer,
         unregisterLayer,
         signalLayerReady,
+        registerFramePass,
+        unregisterFramePass,
     ]);
 
 
