@@ -40,6 +40,11 @@ const WindTrailParticlesLayer = dynamic(() => import("./layers/WindTrailParticle
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
 
+const TestWindLayer = dynamic(() => import("./layers/TestWindLayer"), {
+  ssr: false,
+  loading: () => <div style={{ width: "100%", height: "100%" }} />,
+});
+
 const TimeSlider = dynamic(() => import("./TimeSlider"), {
   ssr: false,
   loading: () => <div style={{ height: "100%" }} />,
@@ -85,7 +90,8 @@ export default function HomeClient() {
             <IVTLayer />
             <MslContoursLayer />
             <WindUVArrowsLayer />
-            {/* <WindTrailParticlesLayer pressureLevel={925} heightTex={null}/> */}
+            <WindTrailParticlesLayer pressureLevel={925} heightTex={null}/>
+            {/* <TestWindLayer /> */}
           </EarthBase>
         </div>
 

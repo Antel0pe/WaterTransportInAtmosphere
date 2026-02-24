@@ -101,7 +101,7 @@ void getZRange(out float minW, out float maxW) {
 `
 
 const mapUVtoLatLng = `
-  float globeRadius = 110.0;
+  float globeRadius = 100.0;
   
   // deg→rad
   float d2r(float d) { return d * 0.017453292519943295; }
@@ -300,10 +300,6 @@ const SIM_FRAG = `
       // Decode to physical units (m/s)
       float u_ms = mix(uMin, uMax, rg.r);
       float v_ms = mix(vMin, vMax, rg.g);
-
-      // Plate-carrée convention used elsewhere: +V should be northward
-      // Your previous code had a minus on V (image-space vs geo). Keep that if needed:
-      v_ms = -v_ms;
 
       return vec2(u_ms, v_ms);
     }
@@ -748,7 +744,7 @@ export default function WindTrailParticlesLayer({
                         uTrailTex: { value: trailReadRT.texture },
                         uOpacity: { value: 0.9 },
                         uLonOffset: { value: 0.25 },
-                        uFlipV: { value: false },
+                        uFlipV: { value: true },
                         trailColor: { value: new THREE.Color(0x99ffff) },
                     },
                 });
