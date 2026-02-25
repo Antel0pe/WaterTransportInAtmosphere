@@ -63,6 +63,9 @@ export interface TimeSliderProps {
 export default function TimeSlider({ value, onChange, allReady }: TimeSliderProps) {
   const start = useMemo(() => parseDateTimeUTC(START_STR), []);
   const end = useMemo(() => parseDateTimeUTC(END_STR), []);
+  const [stepHours, setStepHours] = useState<number>(1);
+  const stepHoursRef = useRef<number>(1);
+  useEffect(() => { stepHoursRef.current = stepHours; }, [stepHours]);
 
   // Total slider span in whole hours
   const totalHours = useMemo(() => {
@@ -135,7 +138,7 @@ export default function TimeSlider({ value, onChange, allReady }: TimeSliderProp
   // Keyboard stepping
   const step = useCallback(
     (delta: -1 | 1) => {
-      setDraftAndSchedule(draftHoursRef.current + delta);
+      setDraftAndSchedule(draftHoursRef.current + delta * stepHoursRef.current);
     },
     [setDraftAndSchedule]
   );
@@ -195,7 +198,7 @@ export default function TimeSlider({ value, onChange, allReady }: TimeSliderProp
 
     // After ready, wait 200ms, then advance by 1 hour
     playTimerRef.current = window.setTimeout(() => {
-      const next = Math.min(totalHoursRef.current, currentHoursRef.current + 1);
+      const next = Math.min(totalHoursRef.current, currentHoursRef.current + stepHoursRef.current);
 
       // stop at end
       if (next === currentHoursRef.current) {
@@ -231,6 +234,8 @@ export default function TimeSlider({ value, onChange, allReady }: TimeSliderProp
     const dt = new Date(start.getTime() + draftHours * MS_PER_HOUR);
     return formatDateTimeUTC(dt);
   }, [start, draftHours]);
+
+  const clamp = (v: number) => Math.max(1, Math.min(24, v));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 12, width: "100%", height: "100%", justifyContent: "center" }}>
@@ -295,8 +300,45 @@ export default function TimeSlider({ value, onChange, allReady }: TimeSliderProp
         style={{ width: "100%" }}
       />
 
-      <div style={{ textAlign: "center", fontSize: 12 }}>
-        {formatPrettyUTC(parseDateTimeUTC(displayValueStr))} UTC
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        {/* Left: step control */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+          <div style={{ opacity: 0.85, whiteSpace: "nowrap" }}>Step (hours)</div>
+
+          <input
+            type="number"
+            min={1}
+            max={24}
+            step={1}
+            value={stepHours}
+            onChange={(e) => setStepHours(clamp(Number(e.target.value)))}
+            onWheel={(e) => {
+              e.preventDefault();
+              const dir = e.deltaY > 0 ? -1 : 1;
+              setStepHours((s) => clamp(s + dir));
+            }}
+            style={{
+              width: 64,
+              padding: "6px 8px",
+              borderRadius: 8,
+              border: "1px solid rgba(255,255,255,0.25)",
+              background: "rgba(0,0,0,0.35)",
+              color: "white",
+              outline: "none",
+              textAlign: "center",
+            }}
+          />
+
+          <div style={{ opacity: 0.75, whiteSpace: "nowrap" }}>h</div>
+        </div>
+
+        {/* Center: current time */}
+        <div style={{ flex: 1, textAlign: "center", fontSize: 12 }}>
+          {formatPrettyUTC(parseDateTimeUTC(displayValueStr))} UTC
+        </div>
+
+        {/* Right spacer to keep center truly centered */}
+        <div style={{ width: 160 }} />
       </div>
     </div>
   );

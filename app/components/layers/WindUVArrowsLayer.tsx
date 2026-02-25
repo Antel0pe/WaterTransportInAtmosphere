@@ -22,10 +22,14 @@ function makeArrowGeometry() {
   const shaftH = 0.7;
   const headH = 0.3;
 
-  const shaft = new THREE.CylinderGeometry(0.018, 0.018, shaftH, 6, 1, true);
+  // 👇 add thickness knobs
+  const shaftR = 0.035; // was 0.018
+  const headR  = 0.09;  // was 0.05
+
+  const shaft = new THREE.CylinderGeometry(shaftR, shaftR, shaftH, 10, 1, true);
   shaft.translate(0, shaftH * 0.5, 0);
 
-  const head = new THREE.ConeGeometry(0.05, headH, 10, 1, true);
+  const head = new THREE.ConeGeometry(headR, headH, 14, 1, true);
   head.translate(0, shaftH + headH * 0.5, 0);
 
   const merged = BufferGeometryUtils.mergeGeometries([shaft, head], false);
