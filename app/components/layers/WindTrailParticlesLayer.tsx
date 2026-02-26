@@ -25,28 +25,6 @@ void getGphRange(float pressure, out float minRange, out float maxRange) {
 }
 `;
 
-// Shared GLSL utilities reused by vertex shaders
-export const get_position_z_shared_glsl = `
-  ${min_max_gph_ranges_glsl}
-
-  float decodeElevation(vec3 rgb) {
-    float R = floor(rgb.r * 255.0 + 0.5);
-    float G = floor(rgb.g * 255.0 + 0.5);
-    float B = floor(rgb.b * 255.0 + 0.5);
-    return (R * 65536.0 + G * 256.0 + B) * 0.1 - 10000.0;
-  }
-
-  float get_position_z(sampler2D tex, vec2 uv, float exaggeration) {
-    float minGPHRange, maxGPHRange;
-    getGphRange(uPressure, minGPHRange, maxGPHRange);
-
-    float elev = decodeElevation(texture2D(tex, uv).rgb);
-    float t = clamp((elev - minGPHRange) / (maxGPHRange - minGPHRange), 0.0, 1.0);
-    return exaggeration * t;
-  }
-`;
-
-
 export const GET_POSITION_Z_SHARED_GLSL3 = `
   ${min_max_gph_ranges_glsl}
   float decodeElevation(vec3 rgb) {
@@ -121,13 +99,6 @@ const mapUVtoLatLng = `
   }
 `
 
-// GLSL3 shared helpers for deriving XY from gl_VertexID
-const GET_POSITION_XY_SHARED_GLSL3 = `
-  vec2 plane_xy_from_uv(vec2 uv, float aspect) {
-    return vec2((uv.x - 0.5) * aspect, (uv.y - 0.5));
-  }
-`;
-
 // GLSL3 helper: map gl_VertexID to subsampled UVs using a fixed integer step
 const GET_UV_SUBSAMPLED_GLSL3 = `
   vec2 get_uv_from_vertex_id_subsampled(int gridW, int gridH, int step) {
@@ -141,25 +112,10 @@ const GET_UV_SUBSAMPLED_GLSL3 = `
   }
 `;
 
-// GLSL3 helper: sample per-particle offset (RG) from a packed texture using gl_VertexID
-const GET_OFFSET_FROM_ID_GLSL3 = `
-  vec2 get_offset_from_id(sampler2D offsets, vec2 simSize, int vertexId) {
-    int outW = int(simSize.x);
-    int outH = int(simSize.y);
-    int ii = vertexId % outW;
-    int jj = vertexId / outW;
-    vec2 simUV = vec2((float(ii) + 0.5) / float(outW),
-                      (float(jj) + 0.5) / float(outH));
-    return texture(offsets, simUV).rg;
-  }
-`;
-
 // UV wind points shader (GLSL3): derive per-vertex UV/XY from gl_VertexID
 const UV_POINTS_VERT = `
   ${GET_POSITION_Z_SHARED_GLSL3}
-  ${GET_POSITION_XY_SHARED_GLSL3}
   ${GET_UV_SUBSAMPLED_GLSL3}
-  ${GET_OFFSET_FROM_ID_GLSL3}
   ${mapUVtoLatLng}
   uniform sampler2D uTerrainTexture;
   uniform sampler2D uCurrentPosition;
@@ -171,12 +127,9 @@ const UV_POINTS_VERT = `
   uniform int uGridH;
   uniform int uStep;
   uniform float zOffset;
-  flat out int vId;
-  out float particleOpacity;
   void main(){
     vec2 uvIdx = get_uv_from_vertex_id_subsampled(uGridW, uGridH, uStep);
     vec2 uv = texture(uCurrentPosition, uvIdx).rg;
-    // vec2 xy = plane_xy_from_uv(uv, uAspect);
     vec2 latlon = getLatLon(uv);
     vec3 basePos = latLonToXYZ(latlon.x, latlon.y, globeRadius);
     // 3) sample field height (0..uExaggeration mapped by your get_position_z_glsl3)
@@ -188,7 +141,6 @@ const UV_POINTS_VERT = `
     vec3 worldPos = basePos + normal * hWorld;
 
     // 4) position
-    vId = gl_VertexID;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(worldPos + normal * zOffset, 1.0);
 
     float totalLife = texture(uCurrentPosition, uvIdx).b;
@@ -205,11 +157,7 @@ const UV_POINTS_VERT = `
   }`;
 const UV_POINTS_FRAG = `
   precision highp float;
-  flat in int vId;
-  uniform sampler2D uCurrentPosition;
-  uniform vec2 uSimSize;
   out vec4 fragColor;
-  in float particleOpacity;
   void main(){
     vec2 d = gl_PointCoord - 0.5;
     if(dot(d,d) > 0.25) discard;
@@ -281,12 +229,6 @@ const SIM_FRAG = `
     uniform float uMinDistancePerTimeStep;
 
     float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453123); }
-    vec2 jitter(vec2 st){
-      float a = 6.2831853*hash(st+0.37);
-      float r = 0.003 + 0.004*hash(st+0.91); // tune radius
-      return vec2(cos(a), sin(a))*r;
-    }
-
     vec2 sampleWindUV(vec2 uv) {
       uv = fract(uv);
 
@@ -360,6 +302,17 @@ void main() {
 }
 `;
 
+// Stamp points (draw second, additively)
+const TRAIL_STAMP_FRAG = /* glsl */ `
+  precision highp float;
+  out vec4 fragColor;
+  void main() {
+    vec2 d = gl_PointCoord - 0.5;
+    if (dot(d,d) > 0.16) discard;
+    fragColor = vec4(1.0);
+  }
+`;
+
 export const TRAIL_GLOBE_VERT = /* glsl */`
 out vec3 vWorld;
 void main(){
@@ -420,531 +373,671 @@ void main() {
 }
 `;
 
-export type WindLayerAPI = {
-    // sim ping-pong
-    simScene: THREE.Scene;
-    simCam: THREE.OrthographicCamera;
-    simMat: THREE.ShaderMaterial;
-    readRT: THREE.WebGLRenderTarget;
-    writeRT: THREE.WebGLRenderTarget;
-    ptsMat: THREE.ShaderMaterial;
-    outW: number;
-    outH: number;
+function configureWindTexture(texture: THREE.Texture) {
+  texture.flipY = false;
+  texture.colorSpace = THREE.NoColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.minFilter = THREE.NearestFilter;
+  texture.magFilter = THREE.NearestFilter;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+}
 
-    // trails ping-pong
-    trailReadRT: THREE.WebGLRenderTarget;
-    trailWriteRT: THREE.WebGLRenderTarget;
+function getTextureWH(texture: THREE.Texture): { w: number; h: number } {
+  const img = texture.image as { width?: number; height?: number } | undefined;
+  const w = typeof img?.width === "number" ? img.width : 0;
+  const h = typeof img?.height === "number" ? img.height : 0;
+  return { w, h };
+}
 
-    // stamping + overlay
-    trailStampScene: THREE.Scene;
-    trailStampCam: THREE.OrthographicCamera;
-    trailStampMat: THREE.ShaderMaterial;
+function clearRT(
+  renderer: THREE.WebGLRenderer,
+  rt: THREE.WebGLRenderTarget,
+  alpha: number // 0 or 0.0
+) {
+  const prevRT = renderer.getRenderTarget();
+  const prevClr = renderer.getClearColor(new THREE.Color()).clone();
+  const prevA = renderer.getClearAlpha();
 
-    trailOverlayMesh: THREE.Mesh;
-    trailOverlayMat: THREE.ShaderMaterial;
+  renderer.setRenderTarget(rt);
+  renderer.setClearColor(0x000000, alpha);
+  renderer.clear(true, false, false);
 
-    // decay/copy pass
-    decayScene: THREE.Scene;
-    decayCam: THREE.OrthographicCamera;
-    decayMat: THREE.ShaderMaterial;
-};
+  renderer.setRenderTarget(prevRT);
+  renderer.setClearColor(prevClr, prevA);
+}
 
-type Props = {
-    pressureLevel: number; // 925 for you, but keep generic
-    heightTex: THREE.Texture | null;
-    exaggeration?: number;
-    setWindTex?: (tex: THREE.Texture) => void;
-};
+function clearRTFloat(renderer: THREE.WebGLRenderer, rt: THREE.WebGLRenderTarget) {
+  clearRT(renderer, rt, 0);
+}
+function clearRTByte(renderer: THREE.WebGLRenderer, rt: THREE.WebGLRenderTarget) {
+  clearRT(renderer, rt, 0.0);
+}
 
-export default function WindTrailParticlesLayer({
+function disposeWindLayer(
+  args: {
+    renderer: THREE.WebGLRenderer;
+    scene: THREE.Scene;
+    unregisterFramePass: (key: string) => void;
+    passKey: string;
+    uvPointsRef: React.MutableRefObject<THREE.Points | null>;
+    windTexRef: React.MutableRefObject<THREE.Texture | null>;
+    apiRef: React.MutableRefObject<WindLayerAPI | null>;
+  }
+) {
+  const { scene, unregisterFramePass, passKey, uvPointsRef, windTexRef, apiRef } = args;
+  const L = apiRef.current;
+  if (!L) return;
+
+  unregisterFramePass(passKey);
+
+  // points
+  if (uvPointsRef.current) scene.remove(uvPointsRef.current);
+  uvPointsRef.current?.geometry?.dispose();
+  (uvPointsRef.current?.material as any)?.dispose?.();
+  uvPointsRef.current = null;
+
+  // overlay
+  L.trailOverlayMesh.removeFromParent();
+  L.trailOverlayMesh.geometry.dispose();
+  L.trailOverlayMat.dispose();
+
+  // RTs
+  L.readRT.dispose();
+  L.writeRT.dispose();
+  L.trailReadRT.dispose();
+  L.trailWriteRT.dispose();
+
+  // materials
+  L.simMat.dispose();
+  L.trailStampMat.dispose();
+  L.decayMat.dispose();
+
+  // best-effort dispose any geometry on helper scenes
+  for (const obj of L.simScene.children) {
+    const anyObj = obj as any;
+    if (anyObj.geometry?.dispose) anyObj.geometry.dispose();
+  }
+  for (const obj of L.trailScene.children) {
+    const anyObj = obj as any;
+    if (anyObj.geometry?.dispose) anyObj.geometry.dispose();
+  }
+
+  apiRef.current = null;
+
+  // wind texture
+  windTexRef.current?.dispose();
+  windTexRef.current = null;
+}
+
+function buildWindLayer(args: {
+  renderer: THREE.WebGLRenderer;
+  scene: THREE.Scene;
+
+  pressureLevel: number;
+  heightTex: THREE.Texture | null;
+  exaggeration: number;
+
+  texW: number;
+  texH: number;
+  windTexture: THREE.Texture;
+
+  registerFramePass: (key: string, fn: (tick: any) => void) => void;
+  passKey: string;
+
+  // refs (so we can keep using your existing pattern)
+  apiRef: React.MutableRefObject<WindLayerAPI | null>;
+  uvPointsRef: React.MutableRefObject<THREE.Points | null>;
+
+  zoomLevel: number;
+}) {
+  const {
+    renderer,
+    scene,
     pressureLevel,
     heightTex,
     exaggeration,
-    setWindTex,
+    texW,
+    texH,
+    windTexture,
+    registerFramePass,
+    passKey,
+    apiRef,
+    uvPointsRef,
+    zoomLevel,
+  } = args;
+
+  // const UV_POINTS_STEP = 10;
+  // const UV_POINTS_STEP = zoomLevel * 15;
+  const UV_POINTS_STEP = Math.round(
+    THREE.MathUtils.clamp(zoomLevel * 15, 3, 20)
+  );
+  console.log('uv points step: ', UV_POINTS_STEP)
+  const outW = Math.ceil(texW / UV_POINTS_STEP);
+  const outH = Math.ceil(texH / UV_POINTS_STEP);
+
+  const makeFloatRT = (w: number, h: number) =>
+    new THREE.WebGLRenderTarget(w, h, {
+      type: THREE.FloatType,
+      format: THREE.RGBAFormat,
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      wrapS: THREE.ClampToEdgeWrapping,
+      wrapT: THREE.ClampToEdgeWrapping,
+      depthBuffer: false,
+      stencilBuffer: false,
+    });
+
+  const rtRead = makeFloatRT(outW, outH);
+  const rtWrite = makeFloatRT(outW, outH);
+  rtRead.texture.generateMipmaps = false;
+  rtWrite.texture.generateMipmaps = false;
+  clearRTFloat(renderer, rtRead);
+  clearRTFloat(renderer, rtWrite);
+
+  // dummy geo for gl_VertexID
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute(
+    "position",
+    new THREE.BufferAttribute(new Float32Array(outW * outH * 3), 3)
+  );
+
+  const aspect = texW / texH;
+
+  const ptsMat = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    vertexShader: UV_POINTS_VERT,
+    fragmentShader: UV_POINTS_FRAG,
+    transparent: true,
+    blending: THREE.NormalBlending,
+    depthWrite: false,
+    depthTest: true,
+    uniforms: {
+      uTerrainTexture: { value: heightTex },
+      uExaggeration: { value: exaggeration },
+      uAspect: { value: aspect },
+      uPointSize: { value: 1.5 * (window.devicePixelRatio || 1) * 3.0 },
+      uGridW: { value: texW },
+      uGridH: { value: texH },
+      uStep: { value: UV_POINTS_STEP },
+      uCurrentPosition: { value: rtRead.texture },
+      uSimSize: { value: new THREE.Vector2(outW, outH) },
+      uPressure: { value: pressureLevel },
+      zOffset: { value: 1 },
+    },
+  });
+
+  const pts = new THREE.Points(geo, ptsMat);
+  pts.frustumCulled = false;
+  pts.name = `wind-uv-points-${pressureLevel}`;
+  scene.add(pts);
+
+  // sim
+  const simScene = new THREE.Scene();
+  const simCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const simGeom = new THREE.PlaneGeometry(2, 2);
+  const simMat = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    vertexShader: SIM_VERT,
+    fragmentShader: SIM_FRAG,
+    uniforms: {
+      uPrev: { value: rtRead.texture },
+      uDt: { value: 0.0 },
+      uSize: { value: new THREE.Vector2(outW, outH) },
+      uWindTexture: { value: windTexture },
+      uPressure: { value: pressureLevel },
+      uWindGain: { value: 20 },
+      uLifetimeTarget: { value: 8.0 },
+      uMinDistancePerTimeStep: { value: 0.05 },
+    },
+  });
+  simScene.add(new THREE.Mesh(simGeom, simMat));
+
+  // trails RTs
+  const makeTrailRT = (w: number, h: number) =>
+    new THREE.WebGLRenderTarget(w, h, {
+      format: THREE.RGBAFormat,
+      type: THREE.UnsignedByteType,
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      depthBuffer: false,
+      stencilBuffer: false,
+    });
+
+    const TRAIL_SCALE = 1;
+// const TRAIL_SCALE = THREE.MathUtils.clamp(
+//   0.5 + zoomLevel,   // 0 -> 0.5, 0.5 -> 1.0, 1.0 -> 1.5
+//   0.5,
+//   1.5
+// );
+  const trailW = Math.max(1, Math.round(texW * TRAIL_SCALE));
+  const trailH = Math.max(1, Math.round(texH * TRAIL_SCALE));
+
+  const trailReadRT = makeTrailRT(trailW, trailH);
+  const trailWriteRT = makeTrailRT(trailW, trailH);
+  clearRTByte(renderer, trailReadRT);
+  clearRTByte(renderer, trailWriteRT);
+
+  // combined trail scene
+  const trailCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const trailScene = new THREE.Scene();
+
+  const decayGeom = new THREE.PlaneGeometry(2, 2);
+  const decayMat = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    vertexShader: TRAIL_DECAY_VERT,
+    fragmentShader: TRAIL_DECAY_FRAG,
+    depthTest: false,
+    depthWrite: false,
+    transparent: false,
+    blending: THREE.NoBlending,
+    uniforms: { uSrc: { value: trailReadRT.texture } },
+  });
+  const decayMesh = new THREE.Mesh(decayGeom, decayMat);
+  decayMesh.frustumCulled = false;
+  decayMesh.renderOrder = 0;
+  trailScene.add(decayMesh);
+
+  const trailStampMat = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    vertexShader: TRAIL_STAMP_MIN_VERT,
+    fragmentShader: TRAIL_STAMP_FRAG,
+    depthTest: false,
+    depthWrite: false,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    uniforms: {
+      uCurrentPosition: { value: rtRead.texture },
+      uGridW: { value: texW },
+      uGridH: { value: texH },
+      uStep: { value: UV_POINTS_STEP },
+      uPointSize: { value: 1.0 },
+    },
+  });
+  const trailStampPoints = new THREE.Points(geo, trailStampMat);
+  trailStampPoints.frustumCulled = false;
+  trailStampPoints.renderOrder = 1;
+  trailScene.add(trailStampPoints);
+
+  // overlay globe
+  const globeRadius = 100;
+  const trailOverlayGeom = new THREE.SphereGeometry(globeRadius + 1, 256, 128);
+  const trailOverlayMat = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    vertexShader: TRAIL_GLOBE_VERT,
+    fragmentShader: TRAIL_GLOBE_FRAG,
+    transparent: true,
+    depthTest: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: {
+      uTrailTex: { value: trailReadRT.texture },
+      uOpacity: { value: 0.9 },
+      uLonOffset: { value: 0.25 },
+      uFlipV: { value: true },
+      trailColor: { value: new THREE.Color(0x99ffff) },
+    },
+  });
+  trailOverlayMat.toneMapped = false;
+
+  const trailOverlayMesh = new THREE.Mesh(trailOverlayGeom, trailOverlayMat);
+  trailOverlayMesh.frustumCulled = false;
+  trailOverlayMesh.renderOrder = 10;
+  trailOverlayMesh.name = `wind-uv-trails-${pressureLevel}`;
+  scene.add(trailOverlayMesh);
+
+  uvPointsRef.current = pts;
+
+  apiRef.current = {
+    simScene,
+    simCam,
+    simMat,
+    readRT: rtRead,
+    writeRT: rtWrite,
+    ptsMat,
+    outW,
+    outH,
+
+    trailReadRT,
+    trailWriteRT,
+
+    trailOverlayMesh,
+    trailOverlayMat,
+
+    trailScene,
+    trailCam,
+    trailStampMat,
+    decayMat,
+    trailStampPoints,
+
+    texW,
+    texH,
+
+    zoomStep: UV_POINTS_STEP,
+  };
+
+  // frame pass ONCE
+  registerFramePass(passKey, (tick) => {
+    const L = apiRef.current;
+    if (!L) return;
+
+    const simTimeStep = tick.dt;
+
+    // 1) sim
+    L.simMat.uniforms.uPrev.value = L.readRT.texture;
+    L.simMat.uniforms.uDt.value = simTimeStep;
+
+    renderer.setRenderTarget(L.writeRT);
+    renderer.setViewport(0, 0, L.outW, L.outH);
+    renderer.setScissorTest(false);
+    renderer.clear();
+    renderer.render(L.simScene, L.simCam);
+    renderer.setRenderTarget(null);
+
+    // swap sim RTs
+    {
+      const tmp = L.readRT;
+      L.readRT = L.writeRT;
+      L.writeRT = tmp;
+    }
+
+    L.ptsMat.uniforms.uCurrentPosition.value = L.readRT.texture;
+
+    // 2) trails
+    L.decayMat.uniforms.uSrc.value = L.trailReadRT.texture;
+    L.trailStampMat.uniforms.uCurrentPosition.value = L.readRT.texture;
+
+    renderer.setRenderTarget(L.trailWriteRT);
+    renderer.setViewport(0, 0, L.trailWriteRT.width, L.trailWriteRT.height);
+    renderer.setScissorTest(false);
+    renderer.clear();
+
+    // keep the “extra bind” that prevents disco
+    renderer.setRenderTarget(L.trailWriteRT);
+    renderer.render(L.trailScene, L.trailCam);
+
+    // swap trail RTs
+    {
+      const t = L.trailReadRT;
+      L.trailReadRT = L.trailWriteRT;
+      L.trailWriteRT = t;
+    }
+
+    L.trailOverlayMat.uniforms.uTrailTex.value = L.trailReadRT.texture;
+
+    renderer.setRenderTarget(null);
+  });
+}
+
+export type WindLayerAPI = {
+  // sim ping-pong
+  simScene: THREE.Scene;
+  simCam: THREE.OrthographicCamera;
+  simMat: THREE.ShaderMaterial;
+  readRT: THREE.WebGLRenderTarget;
+  writeRT: THREE.WebGLRenderTarget;
+  ptsMat: THREE.ShaderMaterial;
+  outW: number;
+  outH: number;
+
+  // trails ping-pong
+  trailReadRT: THREE.WebGLRenderTarget;
+  trailWriteRT: THREE.WebGLRenderTarget;
+
+  trailOverlayMesh: THREE.Mesh;
+  trailOverlayMat: THREE.ShaderMaterial;
+
+  // trails (decay + stamp share one scene/cam)
+  trailScene: THREE.Scene;
+  trailCam: THREE.OrthographicCamera;
+  trailStampMat: THREE.ShaderMaterial;
+  decayMat: THREE.ShaderMaterial;
+
+  // stamping points object (so we can dispose its material/geo cleanly if needed)
+  trailStampPoints: THREE.Points;
+
+  texW: number;
+  texH: number;
+
+  zoomStep: number;
+};
+
+type Props = {
+  pressureLevel: number; // 925 for you, but keep generic
+  heightTex: THREE.Texture | null;
+  exaggeration?: number;
+  setWindTex?: (tex: THREE.Texture) => void;
+};
+
+export default function WindTrailParticlesLayer({
+  pressureLevel,
+  heightTex,
+  exaggeration,
+  setWindTex,
 }: Props) {
-    // Use EarthBase plumbing
-    const layerKey = useMemo(() => `wind-uv-${pressureLevel}`, [pressureLevel]);
-    const {
-        engineReady,
-        rendererRef,
-        sceneRef,
-        cameraRef,
-        timestamp,
-        signalReady,
-        registerFramePass,
-        unregisterFramePass,
-    } = useEarthLayer(layerKey);
-
-    const apiRef = useRef<WindLayerAPI | null>(null);
-
-    // keep these so we can dispose easily
-    const windTexRef = useRef<THREE.Texture | null>(null);
-    const uvPointsRef = useRef<THREE.Points | null>(null);
-    const uvGeoRef = useRef<THREE.BufferGeometry | null>(null);
-    const uvMatRef = useRef<THREE.ShaderMaterial | null>(null);
-
-    // A unique pass key (so multiple WindUvLayer instances don’t collide)
-    const passKey = useMemo(() => `${layerKey}:framepass`, [layerKey]);
-
-    useEffect(() => {
-        if (!engineReady) return;
-
-        const renderer = rendererRef.current;
-        const scene = sceneRef.current;
-        const camera = cameraRef.current;
-        if (!renderer || !scene || !camera) return;
-
-        let disposed = false;
-
-        // If you want to re-init fully on every timestamp change, keep this effect
-        // dependent on timestamp. If you want to reuse and just swap wind texture,
-        // split into two effects (init once + update texture on timestamp).
-        const url = windUv925RgApiUrl(timestamp);
-
-        const loader = new THREE.TextureLoader();
-        loader.load(
-            url,
-            (texture) => {
-                if (disposed) {
-                    texture.dispose();
-                    return;
-                }
-
-                // wind texture setup
-                texture.flipY = false;
-                texture.colorSpace = THREE.NoColorSpace;
-                texture.wrapS = THREE.RepeatWrapping;
-                texture.wrapT = THREE.ClampToEdgeWrapping;
-                texture.minFilter = THREE.NearestFilter;
-                texture.magFilter = THREE.NearestFilter;
-                texture.generateMipmaps = false;
-                texture.needsUpdate = true;
-
-                // expose to parent if desired
-                setWindTex?.(texture);
-
-                // replace previous wind texture
-                if (windTexRef.current) windTexRef.current.dispose();
-                windTexRef.current = texture;
-
-                const img = texture.image as { width?: number; height?: number } | undefined;
-                const texW = typeof img?.width === "number" ? img.width : 0;
-                const texH = typeof img?.height === "number" ? img.height : 0;
-
-                // If image dims aren’t ready, don’t crash; but also don’t claim ready.
-                if (texW === 0 || texH === 0) {
-                    return;
-                }
-
-                // ---- build or rebuild the whole layer for this timestamp ----
-                // (Simplest correct adaptation: recreate everything on timestamp change.)
-                // If you want, we can optimize later by reusing RTs & geometry.
-
-                // cleanup any previous instance (from prior timestamp)
-                if (apiRef.current) {
-                    // unregister pass before destroying things it uses
-                    unregisterFramePass(passKey);
-
-                    // remove points
-                    if (uvPointsRef.current) scene.remove(uvPointsRef.current);
-                    uvPointsRef.current?.geometry?.dispose();
-                    (uvPointsRef.current?.material as any)?.dispose?.();
-                    uvPointsRef.current = null;
-
-                    uvGeoRef.current?.dispose();
-                    uvGeoRef.current = null;
-                    uvMatRef.current?.dispose();
-                    uvMatRef.current = null;
-
-                    // remove overlay mesh
-                    apiRef.current.trailOverlayMesh.removeFromParent();
-                    apiRef.current.trailOverlayMesh.geometry.dispose();
-                    apiRef.current.trailOverlayMat.dispose();
-
-                    // dispose RTs/materials
-                    apiRef.current.readRT.dispose();
-                    apiRef.current.writeRT.dispose();
-                    apiRef.current.trailReadRT.dispose();
-                    apiRef.current.trailWriteRT.dispose();
-                    apiRef.current.simMat.dispose();
-                    apiRef.current.trailStampMat.dispose();
-                    apiRef.current.decayMat.dispose();
-
-                    apiRef.current = null;
-                }
-
-                const UV_POINTS_STEP = 10;
-                const outW = Math.ceil(texW / UV_POINTS_STEP);
-                const outH = Math.ceil(texH / UV_POINTS_STEP);
-
-                const makeRT = (w: number, h: number) =>
-                    new THREE.WebGLRenderTarget(w, h, {
-                        type: THREE.FloatType,
-                        format: THREE.RGBAFormat,
-                        minFilter: THREE.NearestFilter,
-                        magFilter: THREE.NearestFilter,
-                        wrapS: THREE.ClampToEdgeWrapping,
-                        wrapT: THREE.ClampToEdgeWrapping,
-                        depthBuffer: false,
-                        stencilBuffer: false,
-                    });
-
-                const zeroRT = (rt: THREE.WebGLRenderTarget) => {
-                    const prevRT = renderer.getRenderTarget();
-                    const prevClr = renderer.getClearColor(new THREE.Color()).clone();
-                    const prevA = renderer.getClearAlpha();
-
-                    renderer.setRenderTarget(rt);
-                    renderer.setClearColor(0x000000, 0);
-                    renderer.clear(true, false, false);
-
-                    renderer.setRenderTarget(prevRT);
-                    renderer.setClearColor(prevClr, prevA);
-                };
-
-                const rtRead = makeRT(outW, outH);
-                const rtWrite = makeRT(outW, outH);
-                rtRead.texture.generateMipmaps = false;
-                rtWrite.texture.generateMipmaps = false;
-                zeroRT(rtRead);
-                zeroRT(rtWrite);
-
-                // geometry = dummy positions (your shader ignores them and uses gl_VertexID)
-                const geo = new THREE.BufferGeometry();
-                geo.setAttribute(
-                    "position",
-                    new THREE.BufferAttribute(new Float32Array(outW * outH * 3), 3)
-                );
-
-                const aspect = texW / texH;
-
-                const ptsMat = new THREE.ShaderMaterial({
-                    glslVersion: THREE.GLSL3,
-                    vertexShader: UV_POINTS_VERT,
-                    fragmentShader: UV_POINTS_FRAG,
-                    transparent: true,
-                    blending: THREE.NormalBlending,
-                    depthWrite: false,
-                    depthTest: true,
-                    uniforms: {
-                        uTerrainTexture: { value: heightTex },
-                        uExaggeration: { value: exaggeration ?? 0.5 },
-                        uAspect: { value: aspect },
-                        uPointSize: { value: 1.5 * (window.devicePixelRatio || 1) * 3.0 },
-                        uGridW: { value: texW },
-                        uGridH: { value: texH },
-                        uStep: { value: UV_POINTS_STEP },
-                        uCurrentPosition: { value: rtRead.texture },
-                        uSimSize: { value: new THREE.Vector2(outW, outH) },
-                        uPressure: { value: pressureLevel },
-                        zOffset: { value: 1 },
-                    },
-                });
-
-                const pts = new THREE.Points(geo, ptsMat);
-                pts.frustumCulled = false;
-                pts.name = `wind-uv-points-${pressureLevel}`;
-                scene.add(pts);
-
-                // --- SIM scene (advances positions into rtWrite) ---
-                const simScene = new THREE.Scene();
-                const simCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-                const simGeom = new THREE.PlaneGeometry(2, 2);
-                const simMat = new THREE.ShaderMaterial({
-                    glslVersion: THREE.GLSL3,
-                    vertexShader: SIM_VERT,
-                    fragmentShader: SIM_FRAG,
-                    uniforms: {
-                        uPrev: { value: rtRead.texture },
-                        uDt: { value: 0.0 },
-                        uSize: { value: new THREE.Vector2(outW, outH) },
-                        uWindTexture: { value: texture },
-                        uPressure: { value: pressureLevel },
-                        uWindGain: { value: 20 },
-                        uLifetimeTarget: { value: 8.0 },
-                        uMinDistancePerTimeStep: { value: 0.05 },
-                    },
-                });
-                simScene.add(new THREE.Mesh(simGeom, simMat));
-
-                // --- Trail RTs (texW x texH) ---
-                const makeTrailRT = (w: number, h: number) =>
-                    new THREE.WebGLRenderTarget(w, h, {
-                        format: THREE.RGBAFormat,
-                        type: THREE.UnsignedByteType,
-                        minFilter: THREE.LinearFilter,
-                        magFilter: THREE.LinearFilter,
-                        depthBuffer: false,
-                        stencilBuffer: false,
-                    });
-
-                const clearTrail = (rt: THREE.WebGLRenderTarget) => {
-                    const prevRT = renderer.getRenderTarget();
-                    const prevClr = renderer.getClearColor(new THREE.Color()).clone();
-                    const prevA = renderer.getClearAlpha();
-                    renderer.setRenderTarget(rt);
-                    renderer.setClearColor(0x000000, 0.0);
-                    renderer.clear(true, false, false);
-                    renderer.setRenderTarget(prevRT);
-                    renderer.setClearColor(prevClr, prevA);
-                };
-
-                const trailReadRT = makeTrailRT(texW, texH);
-                const trailWriteRT = makeTrailRT(texW, texH);
-                clearTrail(trailReadRT);
-                clearTrail(trailWriteRT);
-
-                // --- UV-space stamping scene (draws points into trailWriteRT) ---
-                const trailStampCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-                const trailStampScene = new THREE.Scene();
-
-                const trailStampFrag = /* glsl */ `
-          precision highp float;
-          out vec4 fragColor;
-          void main() {
-            vec2 d = gl_PointCoord - 0.5;
-            if (dot(d,d) > 0.16) discard;
-            fragColor = vec4(1.0);
-          }
-        `;
-
-                const trailStampMat = new THREE.ShaderMaterial({
-                    glslVersion: THREE.GLSL3,
-                    vertexShader: TRAIL_STAMP_MIN_VERT,
-                    fragmentShader: trailStampFrag,
-                    depthTest: false,
-                    depthWrite: false,
-                    transparent: true,
-                    blending: THREE.AdditiveBlending,
-                    uniforms: {
-                        uCurrentPosition: { value: rtRead.texture },
-                        uGridW: { value: texW },
-                        uGridH: { value: texH },
-                        uStep: { value: UV_POINTS_STEP },
-                        uPointSize: { value: 1.0 },
-                    },
-                });
-
-                const trailStampPoints = new THREE.Points(geo, trailStampMat);
-                trailStampPoints.frustumCulled = false;
-                trailStampScene.add(trailStampPoints);
-
-                // --- Globe overlay that samples trailReadRT ---
-                const globeRadius = 100; // your helper
-                const trailOverlayGeom = new THREE.SphereGeometry(globeRadius + 1, 256, 128);
-                const trailOverlayMat = new THREE.ShaderMaterial({
-                    glslVersion: THREE.GLSL3,
-                    vertexShader: TRAIL_GLOBE_VERT,
-                    fragmentShader: TRAIL_GLOBE_FRAG,
-                    transparent: true,
-                    depthTest: true,
-                    depthWrite: false,
-                    blending: THREE.AdditiveBlending,
-                    uniforms: {
-                        uTrailTex: { value: trailReadRT.texture },
-                        uOpacity: { value: 0.9 },
-                        uLonOffset: { value: 0.25 },
-                        uFlipV: { value: true },
-                        trailColor: { value: new THREE.Color(0x99ffff) },
-                    },
-                });
-                trailOverlayMat.toneMapped = false;
-
-                const trailOverlayMesh = new THREE.Mesh(trailOverlayGeom, trailOverlayMat);
-                trailOverlayMesh.frustumCulled = false;
-                trailOverlayMesh.renderOrder = 10;
-                trailOverlayMesh.name = `wind-uv-trails-${pressureLevel}`;
-                scene.add(trailOverlayMesh);
-
-                // --- Decay pass (copy scene): trailWriteRT = trailReadRT * 0.99 ---
-                const decayScene = new THREE.Scene();
-                const decayCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-                const decayGeom = new THREE.PlaneGeometry(2, 2);
-                const decayMat = new THREE.ShaderMaterial({
-                    glslVersion: THREE.GLSL3,
-                    vertexShader: TRAIL_DECAY_VERT,
-                    fragmentShader: TRAIL_DECAY_FRAG,
-                    depthTest: false,
-                    depthWrite: false,
-                    transparent: false,
-                    blending: THREE.NoBlending,
-                    uniforms: { uSrc: { value: trailReadRT.texture } },
-                });
-                decayScene.add(new THREE.Mesh(decayGeom, decayMat));
-
-                // stash refs
-                uvPointsRef.current = pts;
-                uvGeoRef.current = geo;
-                uvMatRef.current = ptsMat;
-
-                apiRef.current = {
-                    simScene,
-                    simCam,
-                    simMat,
-                    readRT: rtRead,
-                    writeRT: rtWrite,
-                    ptsMat,
-                    outW,
-                    outH,
-                    trailReadRT,
-                    trailWriteRT,
-                    trailStampScene,
-                    trailStampCam,
-                    trailStampMat,
-                    trailOverlayMesh,
-                    trailOverlayMat,
-                    decayScene,
-                    decayCam,
-                    decayMat,
-                };
-
-                // ---- register the per-layer frame pass (this replaces your old global Set loop) ----
-                registerFramePass(passKey, (tick) => {
-                    const L = apiRef.current;
-                    if (!L) return;
-
-                    // match your loop: fixed step or your timing logic
-                    // (you used simTimeStep; I'm using tick.dt as default)
-                    const simTimeStep = tick.dt;
-
-                    // -----------------------------
-                    // 1) advance sim
-                    // -----------------------------
-                    L.simMat.uniforms.uPrev.value = L.readRT.texture;
-                    L.simMat.uniforms.uDt.value = simTimeStep;
-
-                    renderer.setRenderTarget(L.writeRT);
-                    renderer.setViewport(0, 0, L.outW, L.outH);
-                    renderer.setScissorTest(false);
-                    renderer.clear();
-                    renderer.render(L.simScene, L.simCam);
-                    renderer.setRenderTarget(null);
-
-                    // swap sim RTs
-                    {
-                        const tmp = L.readRT;
-                        L.readRT = L.writeRT;
-                        L.writeRT = tmp;
-                    }
-
-                    // points sample the latest
-                    L.ptsMat.uniforms.uCurrentPosition.value = L.readRT.texture;
-
-                    // -----------------------------
-                    // 2) copy + stamp into SAME RT
-                    // -----------------------------
-
-                    // copy pass
-                    L.decayMat.uniforms.uSrc.value = L.trailReadRT.texture;
-                    renderer.setRenderTarget(L.trailWriteRT);
-
-                    // IMPORTANT: follow your snippet: do NOT set viewport/scissor here
-                    // renderer.setViewport(0, 0, L.trailWriteRT.width, L.trailWriteRT.height);
-                    // renderer.setScissorTest(false);
-
-                    renderer.clear();
-                    renderer.render(L.decayScene, L.decayCam);
-
-                    // --- draw particles into trailRT as white dots ---
-                    renderer.setRenderTarget(L.trailWriteRT);
-                    renderer.setViewport(0, 0, L.trailWriteRT.width, L.trailWriteRT.height);
-                    renderer.setScissorTest(false);
-
-                    // keep both materials sampling the latest positions texture
-                    L.ptsMat.uniforms.uCurrentPosition.value = L.readRT.texture;
-                    // L.trailPtsMat.uniforms.uCurrentPosition.value = L.readRT.texture;
-
-                    renderer.setRenderTarget(L.trailWriteRT);
-                    renderer.setScissorTest(false);
-
-                    L.trailStampMat.uniforms.uCurrentPosition.value = L.readRT.texture;
-                    renderer.render(L.trailStampScene, L.trailStampCam); // ✅ UV-space
-
-                    // swap trail RTs
-                    {
-                        const t = L.trailReadRT;
-                        L.trailReadRT = L.trailWriteRT;
-                        L.trailWriteRT = t;
-                    }
-
-                    // overlay samples newest
-                    L.trailOverlayMat.uniforms.uTrailTex.value = L.trailReadRT.texture;
-
-                    // return to default framebuffer
-                    renderer.setRenderTarget(null);
-                });
-
-                // coordinate readiness with EarthBase
-                signalReady(timestamp);
-            },
-            undefined,
-            (err) => {
-                console.error("Failed to load wind uv png", err);
-                signalReady(timestamp); // decide if failure should still unblock
-            }
-        );
-
-        return () => {
-            disposed = true;
-
-            // stop frame pass first
-            unregisterFramePass(passKey);
-
-            // dispose everything we created in this effect
-            const renderer = rendererRef.current;
-            const scene = sceneRef.current;
-            if (renderer && scene) {
-                if (uvPointsRef.current) scene.remove(uvPointsRef.current);
-            }
-
-            if (uvPointsRef.current) {
-                uvPointsRef.current.geometry.dispose();
-                (uvPointsRef.current.material as any)?.dispose?.();
-                uvPointsRef.current = null;
-            }
-
-            uvGeoRef.current?.dispose();
-            uvGeoRef.current = null;
-
-            uvMatRef.current?.dispose();
-            uvMatRef.current = null;
-
-            if (apiRef.current) {
-                apiRef.current.trailOverlayMesh.removeFromParent();
-                apiRef.current.trailOverlayMesh.geometry.dispose();
-                apiRef.current.trailOverlayMat.dispose();
-
-                apiRef.current.readRT.dispose();
-                apiRef.current.writeRT.dispose();
-                apiRef.current.trailReadRT.dispose();
-                apiRef.current.trailWriteRT.dispose();
-
-                apiRef.current.simMat.dispose();
-                apiRef.current.trailStampMat.dispose();
-                apiRef.current.decayMat.dispose();
-
-                apiRef.current = null;
-            }
-
-            // wind texture (loaded per timestamp)
-            windTexRef.current?.dispose();
-            windTexRef.current = null;
-        };
-    }, [
-        engineReady,
-        rendererRef,
-        sceneRef,
-        cameraRef,
-        timestamp,
-        pressureLevel,
-        heightTex,
-        exaggeration,
-        registerFramePass,
+  // Use EarthBase plumbing
+  const layerKey = useMemo(() => `wind-uv-${pressureLevel}`, [pressureLevel]);
+  const {
+    engineReady,
+    rendererRef,
+    sceneRef,
+    timestamp,
+    signalReady,
+    registerFramePass,
+    unregisterFramePass,
+    zoom01,
+  } = useEarthLayer(layerKey);
+  console.log('zoom level ', zoom01)
+
+  const apiRef = useRef<WindLayerAPI | null>(null);
+
+  // keep these so we can dispose easily
+  const windTexRef = useRef<THREE.Texture | null>(null);
+  const uvPointsRef = useRef<THREE.Points | null>(null);
+
+  // A unique pass key (so multiple WindUvLayer instances don’t collide)
+  const passKey = useMemo(() => `${layerKey}:framepass`, [layerKey]);
+
+  useEffect(() => {
+    if (!engineReady) return;
+
+    const renderer = rendererRef.current;
+    const scene = sceneRef.current;
+    if (!renderer || !scene) return;
+
+    let disposed = false;
+    const url = windUv925RgApiUrl(timestamp);
+
+    const loader = new THREE.TextureLoader();
+    loader.load(
+      url,
+      (texture) => {
+        if (disposed) {
+          texture.dispose();
+          return;
+        }
+
+        configureWindTexture(texture);
+
+        const { w: texW, h: texH } = getTextureWH(texture);
+        if (texW === 0 || texH === 0) {
+          texture.dispose();
+          return;
+        }
+
+        const existing = apiRef.current;
+
+        // 1) If first time: build
+        if (!existing) {
+          if (windTexRef.current) windTexRef.current.dispose();
+          windTexRef.current = texture;
+          setWindTex?.(texture);
+
+          buildWindLayer({
+            renderer,
+            scene,
+            pressureLevel,
+            heightTex,
+            exaggeration: exaggeration ?? 0.5,
+            texW,
+            texH,
+            windTexture: texture,
+            registerFramePass,
+            passKey,
+            apiRef,
+            uvPointsRef,
+            zoomLevel: zoom01,
+          });
+
+          signalReady(timestamp);
+          return;
+        }
+
+        // 2) If dims changed: rebuild
+        if (existing.texW !== texW || existing.texH !== texH) {
+          disposeWindLayer({
+            renderer,
+            scene,
+            unregisterFramePass,
+            passKey,
+            uvPointsRef,
+            windTexRef,
+            apiRef,
+          });
+
+          // after disposal, build again
+          windTexRef.current = texture;
+          setWindTex?.(texture);
+
+          buildWindLayer({
+            renderer,
+            scene,
+            pressureLevel,
+            heightTex,
+            exaggeration: exaggeration ?? 0.5,
+            texW,
+            texH,
+            windTexture: texture,
+            registerFramePass,
+            passKey,
+            apiRef,
+            uvPointsRef,
+            zoomLevel: zoom01,
+          });
+
+          signalReady(timestamp);
+          return;
+        }
+
+        if (existing.zoomStep !== zoom01) {
+          // IMPORTANT: keep the new texture or reuse the same one;
+          // we already have `texture` loaded and configured.
+          disposeWindLayer({
+            renderer,
+            scene,
+            unregisterFramePass,
+            passKey,
+            uvPointsRef,
+            windTexRef,
+            apiRef,
+          });
+
+          // after disposal, build again using the SAME already-loaded texture
+          windTexRef.current = texture;
+          setWindTex?.(texture);
+
+          buildWindLayer({
+            renderer,
+            scene,
+            pressureLevel,
+            heightTex,
+            exaggeration: exaggeration ?? 0.5,
+            texW,
+            texH,
+            windTexture: texture,
+            registerFramePass,
+            passKey,
+            apiRef,
+            uvPointsRef,
+            zoomLevel: zoom01,
+          });
+
+          signalReady(timestamp);
+          return;
+        }
+
+        // 3) Normal case: swap wind texture + reset RTs
+        if (windTexRef.current) windTexRef.current.dispose();
+        windTexRef.current = texture;
+        setWindTex?.(texture);
+
+        existing.simMat.uniforms.uWindTexture.value = texture;
+
+        clearRTFloat(renderer, existing.readRT);
+        clearRTFloat(renderer, existing.writeRT);
+        clearRTByte(renderer, existing.trailReadRT);
+        clearRTByte(renderer, existing.trailWriteRT);
+
+        existing.ptsMat.uniforms.uCurrentPosition.value = existing.readRT.texture;
+        existing.trailStampMat.uniforms.uCurrentPosition.value = existing.readRT.texture;
+
+        existing.decayMat.uniforms.uSrc.value = existing.trailReadRT.texture;
+        existing.trailOverlayMat.uniforms.uTrailTex.value = existing.trailReadRT.texture;
+
+        signalReady(timestamp);
+      },
+      undefined,
+      (err) => {
+        console.error("Failed to load wind uv png", err);
+        signalReady(timestamp);
+      }
+    );
+
+    return () => {
+      disposed = true;
+    };
+  }, [
+    engineReady,
+    rendererRef,
+    sceneRef,
+    timestamp,
+    pressureLevel,
+    heightTex,
+    exaggeration,
+    registerFramePass,
+    unregisterFramePass,
+    passKey,
+    signalReady,
+    setWindTex,
+    zoom01,
+  ]);
+
+  useEffect(() => {
+    if (!engineReady) return;
+    const renderer = rendererRef.current;
+    const scene = sceneRef.current;
+    if (!renderer || !scene) return;
+
+    return () => {
+      disposeWindLayer({
+        renderer,
+        scene,
         unregisterFramePass,
         passKey,
-        signalReady,
-        setWindTex,
-    ]);
+        uvPointsRef,
+        windTexRef,
+        apiRef,
+      });
+    };
+  }, [engineReady, rendererRef, sceneRef, unregisterFramePass, passKey]);
 
-    return null;
+  useEffect(() => {
+    const L = apiRef.current;
+    if (!L) return;
+    L.ptsMat.uniforms.uTerrainTexture.value = heightTex;
+    L.ptsMat.uniforms.uExaggeration.value = exaggeration ?? 0.5;
+  }, [heightTex, exaggeration]);
+
+  return null;
 }

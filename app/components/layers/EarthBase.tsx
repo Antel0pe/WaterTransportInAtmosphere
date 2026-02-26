@@ -27,6 +27,9 @@ export type EarthEngine = {
 
     registerFramePass: (key: string, pass: FramePass) => void;
     unregisterFramePass: (key: string) => void;
+
+    zoom01: number;                // 0..1 based on radius bounds
+    setZoom01: (z: number) => void; // set camera radius from 0..1
 };
 
 const EarthContext = createContext<EarthEngine | null>(null);
@@ -61,6 +64,10 @@ export type FrameTick = {
 
 export type FramePass = (tick: FrameTick) => void;
 
+// Camera radius bounds (distance from globe center)
+// "Zoom in" = smaller radius, "Zoom out" = larger radius
+const ZOOM_RADIUS_MIN = 115; // max zoom in  (closest)
+const ZOOM_RADIUS_MAX = 400; // max zoom out (farthest)
 
 type Props = {
     timestamp: string;
@@ -84,6 +91,23 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
     const [allLayersReady, setAllLayersReady] = useState(false);
 
     const framePassesRef = useRef(new Map<string, FramePass>());
+
+    const [zoom01, _setZoom01] = useState(0); // canonical stored zoom
+    const pendingZoomRef = useRef<number>(0);
+    const zoomCommitTimerRef = useRef<number | null>(null);
+
+    const scheduleZoomCommit = useCallback((z: number) => {
+        pendingZoomRef.current = z;
+
+        if (zoomCommitTimerRef.current != null) {
+            window.clearTimeout(zoomCommitTimerRef.current);
+        }
+
+        zoomCommitTimerRef.current = window.setTimeout(() => {
+            _setZoom01(pendingZoomRef.current);
+            zoomCommitTimerRef.current = null;
+        }, 500);
+    }, []);
 
     // recompute helper
     const recomputeAllReady = useCallback(() => {
@@ -139,6 +163,28 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
         framePassesRef.current.delete(key);
     }, []);
 
+    const radiusToZoom01 = useCallback((R: number) => {
+        const z = (R - ZOOM_RADIUS_MIN) / (ZOOM_RADIUS_MAX - ZOOM_RADIUS_MIN);
+        return THREE.MathUtils.clamp(z, 0, 1);
+    }, []);
+
+    const zoom01ToRadius = useCallback((z: number) => {
+        return ZOOM_RADIUS_MIN + THREE.MathUtils.clamp(z, 0, 1) * (ZOOM_RADIUS_MAX - ZOOM_RADIUS_MIN);
+    }, []);
+
+    const setZoom01 = useCallback((z: number) => {
+        const camera = cameraRef.current;
+        if (!camera) return;
+
+        const R = zoom01ToRadius(z);
+
+        // preserve direction; just change radius
+        camera.position.normalize().multiplyScalar(R);
+
+        // update stored value (clamped)
+        _setZoom01(radiusToZoom01(R));
+    }, [radiusToZoom01, zoom01ToRadius]);
+
 
 
     const render = useCallback(() => {
@@ -189,6 +235,7 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
         renderer.render(scene, camera);
 
         lookAtLatLon(30, -135, camera, controls, globe, 100);
+        _setZoom01(radiusToZoom01(camera.position.length()));
 
         scene.add(new THREE.AmbientLight(0xffffff, 2));
         const sun = null;
@@ -406,12 +453,12 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
                     const newPos = camera.position.clone().add(n.clone().multiplyScalar(climb));
 
                     const R = newPos.length();              // new radius from center
-                    const Rmin = 115;                       // set your min altitude (world units)
-                    const Rmax = 500;                      // set your max altitude
+                    const Rclamped = THREE.MathUtils.clamp(R, ZOOM_RADIUS_MIN, ZOOM_RADIUS_MAX);
 
-                    // clamp radius and reproject onto that sphere
-                    const Rclamped = THREE.MathUtils.clamp(R, Rmin, Rmax);
                     camera.position.copy(newPos.normalize().multiplyScalar(Rclamped));
+
+                    // _setZoom01(radiusToZoom01(Rclamped));
+                    scheduleZoomCommit(radiusToZoom01(Rclamped));
 
                     didMove = true;
                 }
@@ -493,6 +540,11 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
             document.removeEventListener("pointerlockerror", onPointerLockError);
             window.removeEventListener("keydown", onReleaseKey);
             elem.removeEventListener("mousemove", onMouseMove);
+
+            if (zoomCommitTimerRef.current != null) {
+                window.clearTimeout(zoomCommitTimerRef.current);
+                zoomCommitTimerRef.current = null;
+            }
         };
     }, []);
 
@@ -596,6 +648,8 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
         allLayersReady,
         registerFramePass,
         unregisterFramePass,
+        zoom01,
+        setZoom01,
     }), [
         engineReady,
         timestamp,
@@ -605,6 +659,8 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
         signalLayerReady,
         registerFramePass,
         unregisterFramePass,
+        zoom01,
+        setZoom01,
     ]);
 
 
