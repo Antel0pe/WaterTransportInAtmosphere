@@ -6,7 +6,9 @@ export type LayerToggles = {
   evaporation: boolean;
   ivt: boolean;
   mslContours: boolean;
+  windTrails: boolean;
 };
+
 type EvapParams = {
   uEvapMin: number;
   uEvapMax: number;
@@ -34,6 +36,10 @@ type MslContoursParams = {
   opacity: number;
 };
 
+type WindTrailsParams = {
+  dummy: number; // example param that doesn't do anything yet
+};
+
 
 type ControlsState = {
   layers: LayerToggles;
@@ -47,11 +53,20 @@ type ControlsState = {
   setMoisture: (patch: Partial<MoistureParams>) => void;
   setIVT: (patch: Partial<IVTParams>) => void;
   setMslContours: (patch: Partial<MslContoursParams>) => void;
+
+  windTrails: WindTrailsParams;
+  setWindTrails: (patch: Partial<WindTrailsParams>) => void;
 };
 
 export const useControls = create<ControlsState>()(
   subscribeWithSelector((set) => ({
-    layers: { moisture: true, evaporation: false, ivt: false, mslContours: true },
+    layers: {
+      moisture: true,
+      evaporation: false,
+      ivt: false,
+      mslContours: true,
+      windTrails: true,
+    },
 
     mslContours: {
       contrast: 3.5,
@@ -95,5 +110,15 @@ export const useControls = create<ControlsState>()(
 
     setMslContours: (patch) =>
       set((s) => ({ mslContours: { ...s.mslContours, ...patch } })),
-  }))
+
+    windTrails: {
+      dummy: 1.0,
+    },
+
+    setWindTrails: (patch) =>
+      set((s) => ({ windTrails: { ...s.windTrails, ...patch } })),
+  })),
+
+
+
 );

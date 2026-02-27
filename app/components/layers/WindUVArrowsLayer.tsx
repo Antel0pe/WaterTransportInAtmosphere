@@ -6,7 +6,7 @@ import * as BufferGeometryUtils from "three/examples/jsm/utils/BufferGeometryUti
 
 import { useEarthLayer } from "./EarthBase";
 import { useControls } from "../../state/controlsStore";
-import { windUv925RgApiUrl } from "../utils/ApiResponses";
+import { windUvRgApiUrl } from "../utils/ApiResponses";
 
 import { latLonToVec3, getGlobeRadius } from "../utils/EarthUtils";
 
@@ -190,7 +190,7 @@ export default function Wind925ArrowsLayer() {
       try {
         clearGroup(g);
 
-        const img = await loadImageData(windUv925RgApiUrl(timestamp));
+        const img = await loadImageData(windUvRgApiUrl(timestamp, 925));
         if (cancelled) return;
 
         const { width: W, height: H, data } = img;

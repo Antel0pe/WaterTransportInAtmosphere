@@ -2,7 +2,7 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { useEarthLayer } from "./EarthBase";
-import { windUv925RgApiUrl } from "../utils/ApiResponses";
+import { windUvRgApiUrl } from "../utils/ApiResponses";
 
 export default function TestWindLayer() {
   const { engineReady, sceneRef, globeRef, timestamp, signalReady } =
@@ -117,7 +117,7 @@ export default function TestWindLayer() {
     let cancelled = false;
 
     const mat = mesh.material as THREE.ShaderMaterial;
-    const url = windUv925RgApiUrl(timestamp);
+    const url = windUvRgApiUrl(timestamp, 925);
 
     new THREE.TextureLoader().load(
       url,

@@ -45,6 +45,10 @@ export default function TweakpaneControls() {
 
       mslContrast: s0.mslContours.contrast,
       mslOpacity: s0.mslContours.opacity,
+
+      windTrails: s0.layers.windTrails,
+
+      windDummy: s0.windTrails.dummy,
     };
 
     // ---- Reset ----
@@ -54,6 +58,7 @@ export default function TweakpaneControls() {
       evap: { ...s0.evap },
       ivt: { ...s0.ivt },
       mslContours: { ...s0.mslContours },
+      windTrails: { ...s0.windTrails },
     };
 
     pane.addButton({ title: "Reset to defaults" }).on("click", () => {
@@ -92,6 +97,10 @@ export default function TweakpaneControls() {
 
       ui.mslContrast = defaults.mslContours.contrast;
       ui.mslOpacity = defaults.mslContours.opacity;
+
+      ui.windTrails = defaults.layers.windTrails;
+      ui.windDummy = defaults.windTrails.dummy;
+      st.setWindTrails(defaults.windTrails);
 
       pane.refresh();
     });
@@ -343,6 +352,23 @@ export default function TweakpaneControls() {
     bMslContrast.on("change", (e) => useControls.getState().setMslContours({ contrast: Number(e.value) }));
     bMslOpacity.on("change", (e) => useControls.getState().setMslContours({ opacity: Number(e.value) }));
 
+    const bWindTrails = layersFolder.addBinding(ui, "windTrails", { label: "Wind Trails" });
+    bWindTrails.on("change", (e) => {
+      useControls.getState().setLayer("windTrails", !!e.value);
+    });
+    const windFolder = pane.addFolder({ title: "Wind Trails Params" });
+
+    const bWindDummy = windFolder.addBinding(ui, "windDummy", {
+      label: "dummy",
+      min: 0.0,
+      max: 10.0,
+      step: 0.1,
+    });
+
+    bWindDummy.on("change", (e) => {
+      useControls.getState().setWindTrails({ dummy: Number(e.value) });
+    });
+
     const unsubMslVis = useControls.subscribe(
       (s) => s.layers.mslContours,
       (v) => {
@@ -360,6 +386,21 @@ export default function TweakpaneControls() {
       }
     );
 
+    const unsubWindVis = useControls.subscribe(
+      (s) => s.layers.windTrails,
+      (v) => {
+        ui.windTrails = v;
+        pane.refresh();
+      }
+    );
+
+    const unsubWindParams = useControls.subscribe(
+      (s) => s.windTrails,
+      (p) => {
+        ui.windDummy = p.dummy;
+        pane.refresh();
+      }
+    );
 
     pane.element.style.width = "100%";
 
@@ -372,6 +413,8 @@ export default function TweakpaneControls() {
       unsubIVTParams();
       unsubMslVis();
       unsubMslParams();
+      unsubWindVis();
+      unsubWindParams();
 
 
       pane.dispose();

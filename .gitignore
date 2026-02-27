@@ -5,7 +5,7 @@ data/
 /public/evap_rgb_instant_clim_anom/*
 /public/ivt-925-1000/*
 /public/msl_contours/*
-/public/wind-uv-925-rg/*
+/public/wind-uv-rg/*
 # dependencies
 /node_modules
 /.pnp

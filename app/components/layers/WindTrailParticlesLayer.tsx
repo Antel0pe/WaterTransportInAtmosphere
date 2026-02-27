@@ -3,7 +3,8 @@
 import * as THREE from "three";
 import { useEffect, useMemo, useRef } from "react";
 import { useEarthLayer } from "./EarthBase";
-import { windUv925RgApiUrl } from "../utils/ApiResponses"; // you said to use this
+import { windUvRgApiUrl } from "../utils/ApiResponses"; // you said to use this
+import { useControls } from "@/app/state/controlsStore";
 
 export const min_max_gph_ranges_glsl = `
 uniform float uPressure;
@@ -605,12 +606,12 @@ function buildWindLayer(args: {
       stencilBuffer: false,
     });
 
-    const TRAIL_SCALE = 1;
-// const TRAIL_SCALE = THREE.MathUtils.clamp(
-//   0.5 + zoomLevel,   // 0 -> 0.5, 0.5 -> 1.0, 1.0 -> 1.5
-//   0.5,
-//   1.5
-// );
+  const TRAIL_SCALE = 1;
+  // const TRAIL_SCALE = THREE.MathUtils.clamp(
+  //   0.5 + zoomLevel,   // 0 -> 0.5, 0.5 -> 1.0, 1.0 -> 1.5
+  //   0.5,
+  //   1.5
+  // );
   const trailW = Math.max(1, Math.round(texW * TRAIL_SCALE));
   const trailH = Math.max(1, Math.round(texH * TRAIL_SCALE));
 
@@ -847,7 +848,7 @@ export default function WindTrailParticlesLayer({
     if (!renderer || !scene) return;
 
     let disposed = false;
-    const url = windUv925RgApiUrl(timestamp);
+    const url = windUvRgApiUrl(timestamp, 925);
 
     const loader = new THREE.TextureLoader();
     loader.load(
@@ -889,6 +890,7 @@ export default function WindTrailParticlesLayer({
             uvPointsRef,
             zoomLevel: zoom01,
           });
+          uvPointsRef.current && (uvPointsRef.current.visible = useControls.getState().layers.windTrails);
 
           signalReady(timestamp);
           return;
@@ -925,6 +927,7 @@ export default function WindTrailParticlesLayer({
             uvPointsRef,
             zoomLevel: zoom01,
           });
+          uvPointsRef.current && (uvPointsRef.current.visible = useControls.getState().layers.windTrails);
 
           signalReady(timestamp);
           return;
@@ -962,6 +965,7 @@ export default function WindTrailParticlesLayer({
             uvPointsRef,
             zoomLevel: zoom01,
           });
+          uvPointsRef.current && (uvPointsRef.current.visible = useControls.getState().layers.windTrails);
 
           signalReady(timestamp);
           return;
@@ -1038,6 +1042,24 @@ export default function WindTrailParticlesLayer({
     L.ptsMat.uniforms.uTerrainTexture.value = heightTex;
     L.ptsMat.uniforms.uExaggeration.value = exaggeration ?? 0.5;
   }, [heightTex, exaggeration]);
+
+  useEffect(() => {
+    if (!engineReady) return;
+
+    const unsub = useControls.subscribe(
+      (s) => s.layers.windTrails,
+      (v) => {
+        if (uvPointsRef.current) uvPointsRef.current.visible = v;
+        // optional: if you have other meshes in apiRef.current, set them too
+      }
+    );
+
+    // also apply immediately in case points already exist
+    const v0 = useControls.getState().layers.windTrails;
+    if (uvPointsRef.current) uvPointsRef.current.visible = v0;
+
+    return () => unsub();
+  }, [engineReady]);
 
   return null;
 }

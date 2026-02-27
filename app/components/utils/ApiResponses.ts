@@ -34,6 +34,6 @@ export async function fetchMslContours(datehour: string): Promise<MslContoursFil
   return (await res.json()) as MslContoursFile;
 }
 
-export function windUv925RgApiUrl(datehour: string) {
-  return `/api/wind_uv/${encodeURIComponent(datehour)}`;
+export function windUvRgApiUrl(datehour: string, pressureLevel: number) {
+  return `/api/wind_uv/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
 }
