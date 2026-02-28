@@ -35,12 +35,12 @@ const MslContoursLayer = dynamic(() => import("./layers/MslContoursLayer"), {
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
 
-const WindUVArrowsLayer = dynamic(() => import("./layers/WindUVArrowsLayer"), {
+const WindTrailParticlesLayer = dynamic(() => import("./layers/WindTrailParticlesLayer"), {
   ssr: false,
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
 
-const WindTrailParticlesLayer = dynamic(() => import("./layers/WindTrailParticlesLayer"), {
+const WindTileLayer = dynamic(() => import("./layers/WindTileLayer"), {
   ssr: false,
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
@@ -92,6 +92,7 @@ export default function HomeClient() {
             <MslContoursLayer />
             {/* <WindUVArrowsLayer /> */}
             <WindTrailParticlesLayer heightTex={null} />
+            <WindTileLayer />
             {/* <TestWindLayer /> */}
           </EarthBase>
         </div>

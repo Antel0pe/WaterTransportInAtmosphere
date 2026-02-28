@@ -43,6 +43,78 @@ export function windUvRgApiUrl(datehour: string, pressureLevel: number) {
   return `/api/wind_uv/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
 }
 
+export type WindUvDynamicParams = {
+  min?: number;
+  max?: number;
+  source?: string;
+  roll?: boolean;
+};
+
+export function windUvDynamicApiUrl(
+  datehour: string,
+  pressureLevel: number,
+  params: WindUvDynamicParams = {}
+) {
+  const search = new URLSearchParams();
+  if (params.min !== undefined) search.set("min", String(params.min));
+  if (params.max !== undefined) search.set("max", String(params.max));
+  if (params.source) search.set("source", params.source);
+  if (params.roll !== undefined) search.set("roll", String(params.roll));
+
+  const query = search.toString();
+  const base = `/api/wind_uv_dynamic/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
+  return query ? `${base}?${query}` : base;
+}
+
+export type WindUvTitilerParams = {
+  min?: number;
+  max?: number;
+  source?: string;
+  roll?: boolean;
+};
+
+export function windUvTitilerApiUrl(
+  datehour: string,
+  pressureLevel: number,
+  params: WindUvTitilerParams = {}
+) {
+  const search = new URLSearchParams();
+  if (params.min !== undefined) search.set("min", String(params.min));
+  if (params.max !== undefined) search.set("max", String(params.max));
+  if (params.source) search.set("source", params.source);
+  if (params.roll !== undefined) search.set("roll", String(params.roll));
+
+  const query = search.toString();
+  const base = `/api/wind_uv_titiler/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
+  return query ? `${base}?${query}` : base;
+}
+
+export type WindUvTitilerTileParams = {
+  min?: number;
+  max?: number;
+  source?: string;
+  resampling?: "nearest" | "bilinear" | "cubic";
+};
+
+export function windUvTitilerTileApiUrl(
+  datehour: string,
+  pressureLevel: number,
+  z: number,
+  x: number,
+  y: number,
+  params: WindUvTitilerTileParams = {}
+) {
+  const search = new URLSearchParams();
+  if (params.min !== undefined) search.set("min", String(params.min));
+  if (params.max !== undefined) search.set("max", String(params.max));
+  if (params.source) search.set("source", params.source);
+  if (params.resampling) search.set("resampling", params.resampling);
+
+  const query = search.toString();
+  const base = `/api/wind_uv_titiler_tile/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}/${encodeURIComponent(String(z))}/${encodeURIComponent(String(x))}/${encodeURIComponent(String(y))}`;
+  return query ? `${base}?${query}` : base;
+}
+
 export function potentialVorticityApiUrl(datehour: string, pressureLevel: number) {
   return `/api/potential_vorticity/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
 }

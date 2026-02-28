@@ -7,7 +7,9 @@ import {
   ContoursPressure,
   LayerToggles,
   useControls,
+  WIND_TILE_PRESSURE_OPTIONS,
   WIND_TRAILS_PRESSURE_OPTIONS,
+  WindTilePressure,
   WindTrailsPressure,
 } from "../state/controlsStore";
 
@@ -60,12 +62,16 @@ export default function TweakpaneControls() {
       contoursPressure: s0.contoursPressure as ContoursPressure,
 
       windTrailsPressure: s0.windTrailsPressure as WindTrailsPressure,
+      windTilePressure: s0.windTilePressure as WindTilePressure,
     };
     const contoursPressureOptions = Object.fromEntries(
       CONTOURS_PRESSURE_OPTIONS.map((opt) => [opt.label, opt.value])
     );
     const windTrailsPressureOptions = Object.fromEntries(
       WIND_TRAILS_PRESSURE_OPTIONS.map((opt) => [opt.label, opt.value])
+    );
+    const windTilePressureOptions = Object.fromEntries(
+      WIND_TILE_PRESSURE_OPTIONS.map((opt) => [opt.label, opt.value])
     );
 
     // ---- Reset ----
@@ -78,6 +84,7 @@ export default function TweakpaneControls() {
       mslContours: { ...s0.mslContours },
       contoursPressure: s0.contoursPressure as ContoursPressure,
       windTrailsPressure: s0.windTrailsPressure as WindTrailsPressure,
+      windTilePressure: s0.windTilePressure as WindTilePressure,
     };
 
     pane.addButton({ title: "Reset to defaults" }).on("click", () => {
@@ -127,6 +134,8 @@ export default function TweakpaneControls() {
 
       ui.windTrailsPressure = defaults.windTrailsPressure;
       st.setWindTrailsPressure(defaults.windTrailsPressure);
+      ui.windTilePressure = defaults.windTilePressure;
+      st.setWindTilePressure(defaults.windTilePressure);
       st.setPV(defaults.pv);
 
       pane.refresh();
@@ -464,6 +473,14 @@ export default function TweakpaneControls() {
       useControls.getState().setWindTrailsPressure(e.value as WindTrailsPressure);
     });
 
+    const bWindTilePressure = layersFolder.addBinding(ui, "windTilePressure", {
+      label: "Wind Tile",
+      options: windTilePressureOptions,
+    });
+    bWindTilePressure.on("change", (e) => {
+      useControls.getState().setWindTilePressure(e.value as WindTilePressure);
+    });
+
     const unsubMslParams = useControls.subscribe(
       (s) => s.mslContours,
       (p) => {
@@ -487,6 +504,13 @@ export default function TweakpaneControls() {
         pane.refresh();
       }
     );
+    const unsubWindTilePressure = useControls.subscribe(
+      (s) => s.windTilePressure,
+      (v) => {
+        ui.windTilePressure = v as WindTilePressure;
+        pane.refresh();
+      }
+    );
 
     pane.element.style.width = "100%";
 
@@ -502,6 +526,7 @@ export default function TweakpaneControls() {
       unsubMslParams();
       unsubContoursPressure();
       unsubWindPressure();
+      unsubWindTilePressure();
 
       pane.dispose();
       pane.element.remove();

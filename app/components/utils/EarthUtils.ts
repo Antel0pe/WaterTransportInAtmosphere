@@ -43,3 +43,78 @@ export function lookAtLatLon(
     camera.lookAt(controls.target);
     controls.update();
 }
+
+export type LonLat = { lon: number; lat: number };
+
+export type TileXYZ = {
+    z: number;
+    x: number;
+    y: number;
+};
+
+export type TileBounds = {
+    west: number;
+    south: number;
+    east: number;
+    north: number;
+};
+
+export function clamp(v: number, min: number, max: number) {
+    return Math.min(max, Math.max(min, v));
+}
+
+export function normalizeLon(lon: number) {
+    let x = ((lon + 180) % 360 + 360) % 360 - 180;
+    if (x === -180) x = 180;
+    return x;
+}
+
+export function vec3ToLatLon(
+    v: THREE.Vector3,
+    lonOffsetDeg = 270,
+    latOffsetDeg = 0
+): LonLat {
+    const r = Math.max(v.length(), 1e-9);
+    const latRad = Math.asin(clamp(v.y / r, -1, 1));
+    const lonRad = Math.atan2(v.z, v.x);
+
+    const lat = THREE.MathUtils.radToDeg(latRad) - latOffsetDeg;
+    const lon = normalizeLon(-THREE.MathUtils.radToDeg(lonRad) - lonOffsetDeg);
+
+    return { lon, lat };
+}
+
+const MAX_WEBMERCATOR_LAT = 85.05112878;
+
+export function clampMercatorLat(lat: number) {
+    return clamp(lat, -MAX_WEBMERCATOR_LAT, MAX_WEBMERCATOR_LAT);
+}
+
+export function lonLatToTileXYZ(lonDeg: number, latDeg: number, z: number): TileXYZ {
+    const n = 2 ** z;
+    const lon = normalizeLon(lonDeg);
+    const lat = clampMercatorLat(latDeg);
+    const latRad = THREE.MathUtils.degToRad(lat);
+
+    const xf = ((lon + 180) / 360) * n;
+    const yf =
+        (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) * 0.5 * n;
+
+    const x = clamp(Math.floor(xf), 0, n - 1);
+    const y = clamp(Math.floor(yf), 0, n - 1);
+    return { z, x, y };
+}
+
+function tileYToLat(y: number, z: number) {
+    const n = Math.PI - (2 * Math.PI * y) / (2 ** z);
+    return THREE.MathUtils.radToDeg(Math.atan(Math.sinh(n)));
+}
+
+export function tileXYZToBounds(x: number, y: number, z: number): TileBounds {
+    const n = 2 ** z;
+    const west = (x / n) * 360 - 180;
+    const east = ((x + 1) / n) * 360 - 180;
+    const north = tileYToLat(y, z);
+    const south = tileYToLat(y + 1, z);
+    return { west, south, east, north };
+}

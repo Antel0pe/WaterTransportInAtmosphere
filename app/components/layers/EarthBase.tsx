@@ -4,7 +4,23 @@ import { createContext, ReactNode, RefObject, useCallback, useContext, useEffect
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import ThreeGlobe from 'three-globe';
-import { lookAtLatLon } from "../utils/EarthUtils";
+import { clamp, lonLatToTileXYZ, lookAtLatLon, tileXYZToBounds, vec3ToLatLon } from "../utils/EarthUtils";
+
+export type EarthViewTile = {
+    z: number;
+    x: number;
+    y: number;
+    west: number;
+    south: number;
+    east: number;
+    north: number;
+};
+
+export type EarthViewState = {
+    centerLat: number;
+    centerLon: number;
+    tile: EarthViewTile;
+};
 
 export type EarthEngine = {
     engineReady: boolean;
@@ -30,6 +46,7 @@ export type EarthEngine = {
 
     zoom01: number;                // 0..1 based on radius bounds
     setZoom01: (z: number) => void; // set camera radius from 0..1
+    viewState: EarthViewState | null;
 };
 
 const EarthContext = createContext<EarthEngine | null>(null);
@@ -95,6 +112,8 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
     const [zoom01, _setZoom01] = useState(0); // canonical stored zoom
     const pendingZoomRef = useRef<number>(0);
     const zoomCommitTimerRef = useRef<number | null>(null);
+    const [viewState, _setViewState] = useState<EarthViewState | null>(null);
+    const viewStateRef = useRef<EarthViewState | null>(null);
 
     const scheduleZoomCommit = useCallback((z: number) => {
         pendingZoomRef.current = z;
@@ -107,6 +126,11 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
             _setZoom01(pendingZoomRef.current);
             zoomCommitTimerRef.current = null;
         }, 500);
+    }, []);
+
+    const setViewState = useCallback((next: EarthViewState) => {
+        viewStateRef.current = next;
+        _setViewState(next);
     }, []);
 
     // recompute helper
@@ -244,7 +268,7 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
         // scene.add(sun);
 
         // --- render-on-demand (guarded; no recursive re-entry) ---
-        let rafId: number | null = null;
+        const rafId: number | null = null;
 
         // ===== Hover-to-rotate (no mousedown) with light inertia =====
         controls.enableRotate = false; // avoid built-in drag rotation (we'll do it)
@@ -522,6 +546,8 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
         // Cleanup
         return () => {
             setEngineReady(false);
+            viewStateRef.current = null;
+            _setViewState(null);
             if (rafId != null) cancelAnimationFrame(rafId);
             ro.disconnect();
             controls.dispose();
@@ -555,10 +581,79 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
         const controls = controlsRef.current;
 
         if (!renderer || !scene || !camera || !controls) return;
+        const cameraObj = camera;
+        const controlsObj = controls;
 
         let running = true;
 
         let lastT = performance.now();
+        let lastViewCommit = 0;
+        let lastViewKey = "";
+
+        const ORIGIN = new THREE.Vector3();
+        const FORWARD = new THREE.Vector3();
+        const HIT = new THREE.Vector3();
+
+        const VIEW_GLOBE_RADIUS = 100;
+        const TILE_Z_MIN = 0;
+        const TILE_Z_MAX = 8;
+
+        function computeViewState(): EarthViewState {
+            ORIGIN.copy(cameraObj.position);
+            FORWARD.set(0, 0, -1).applyQuaternion(cameraObj.quaternion).normalize();
+
+            const b = ORIGIN.dot(FORWARD);
+            const c = ORIGIN.lengthSq() - VIEW_GLOBE_RADIUS * VIEW_GLOBE_RADIUS;
+            const disc = b * b - c;
+
+            if (disc >= 0) {
+                const tNear = -b - Math.sqrt(disc);
+                if (tNear > 0) {
+                    HIT.copy(ORIGIN).addScaledVector(FORWARD, tNear);
+                } else {
+                    HIT.copy(ORIGIN).normalize().multiplyScalar(-VIEW_GLOBE_RADIUS);
+                }
+            } else {
+                HIT.copy(ORIGIN).normalize().multiplyScalar(-VIEW_GLOBE_RADIUS);
+            }
+
+            const center = vec3ToLatLon(HIT);
+
+            const zApprox = Math.round(2 + (1 - radiusToZoom01(cameraObj.position.length())) * 6);
+            const z = clamp(zApprox, TILE_Z_MIN, TILE_Z_MAX);
+            const tile = lonLatToTileXYZ(center.lon, center.lat, z);
+            const bounds = tileXYZToBounds(tile.x, tile.y, tile.z);
+
+            return {
+                centerLat: center.lat,
+                centerLon: center.lon,
+                tile: {
+                    z: tile.z,
+                    x: tile.x,
+                    y: tile.y,
+                    west: bounds.west,
+                    south: bounds.south,
+                    east: bounds.east,
+                    north: bounds.north,
+                },
+            };
+        }
+
+        function commitViewState(now: number) {
+            const next = computeViewState();
+            const key = [
+                next.tile.z,
+                next.tile.x,
+                next.tile.y,
+                Math.round(next.centerLat * 100),
+                Math.round(next.centerLon * 100),
+            ].join("/");
+
+            if (key === lastViewKey && now - lastViewCommit < 500) return;
+            lastViewKey = key;
+            lastViewCommit = now;
+            setViewState(next);
+        }
 
         function runFramePassSafely(pass: FramePass, tick: FrameTick) {
             if (!renderer) return;
@@ -621,17 +716,19 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
             renderer.setScissor(prevScissor.x, prevScissor.y, prevScissor.z, prevScissor.w);
             renderer.setScissorTest(prevScissorTest);
 
-            controls.update();
+            controlsObj.update();
+            commitViewState(now);
             // renderer.render(scene, camera);
             render();
 
             requestAnimationFrame(loop);
         };
 
+        commitViewState(performance.now());
         requestAnimationFrame(loop);
         return () => { running = false; };
 
-    }, [engineReady]);
+    }, [engineReady, radiusToZoom01, setViewState]);
 
     const earthValue = useMemo(() => ({
         engineReady,
@@ -650,6 +747,7 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
         unregisterFramePass,
         zoom01,
         setZoom01,
+        viewState,
     }), [
         engineReady,
         timestamp,
@@ -661,6 +759,7 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
         unregisterFramePass,
         zoom01,
         setZoom01,
+        viewState,
     ]);
 
 

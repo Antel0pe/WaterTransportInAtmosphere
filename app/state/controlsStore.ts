@@ -63,6 +63,15 @@ export const WIND_TRAILS_PRESSURE_OPTIONS = [
 
 export type WindTrailsPressure = (typeof WIND_TRAILS_PRESSURE_OPTIONS)[number]["value"];
 
+export const WIND_TILE_PRESSURE_OPTIONS = [
+  { value: "none", label: "None" },
+  { value: 250, label: "250 hPa" },
+  { value: 500, label: "500 hPa" },
+  { value: 925, label: "925 hPa" },
+] as const;
+
+export type WindTilePressure = (typeof WIND_TILE_PRESSURE_OPTIONS)[number]["value"];
+
 type ControlsState = {
   layers: LayerToggles;
   evap: EvapParams;
@@ -72,6 +81,7 @@ type ControlsState = {
   mslContours: MslContoursParams;
   contoursPressure: ContoursPressure;
   windTrailsPressure: WindTrailsPressure;
+  windTilePressure: WindTilePressure;
 
   setLayer: (k: keyof LayerToggles, v: boolean) => void;
   setEvap: (patch: Partial<EvapParams>) => void;
@@ -81,6 +91,7 @@ type ControlsState = {
   setMslContours: (patch: Partial<MslContoursParams>) => void;
   setContoursPressure: (pressure: ContoursPressure) => void;
   setWindTrailsPressure: (pressure: WindTrailsPressure) => void;
+  setWindTilePressure: (pressure: WindTilePressure) => void;
 };
 
 export const useControls = create<ControlsState>()(
@@ -149,6 +160,8 @@ export const useControls = create<ControlsState>()(
     setContoursPressure: (pressure) => set(() => ({ contoursPressure: pressure })),
     windTrailsPressure: 925,
     setWindTrailsPressure: (pressure) => set(() => ({ windTrailsPressure: pressure })),
+    windTilePressure: "none",
+    setWindTilePressure: (pressure) => set(() => ({ windTilePressure: pressure })),
   })),
 
 
