@@ -1,5 +1,6 @@
 # save as: export_gph_contours.py
 import json
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +18,7 @@ IN_PATH = Path("../data/era5_2021-nov_250-500-925_uv_pv_gph.nc")
 OUT_DIR_BASE = Path("../public/gph_contours")
 
 # Pick one of the levels present in the file (e.g. 250, 500, 925)
-PRESSURE_LEVEL = 250  # hPa
+PRESSURE_LEVEL = 250  # hPa (default; can be overridden via CLI)
 
 # Used only if we can't infer a good time block size from dask chunking
 TIME_BLOCK_FALLBACK = 183
@@ -141,8 +142,21 @@ def infer_time_block_from_chunks(ds, t_name, var_name):
     return int(TIME_BLOCK_FALLBACK)
 
 
-def main():
-    out_dir = OUT_DIR_BASE / f"{int(PRESSURE_LEVEL)}"
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Export geopotential height contours for a given pressure level (hPa)."
+    )
+    parser.add_argument(
+        "--pressure-level",
+        type=float,
+        default=float(PRESSURE_LEVEL),
+        help=f"Pressure level in hPa to export (default: {PRESSURE_LEVEL}).",
+    )
+    return parser.parse_args()
+
+
+def main(pressure_level_hpa: float):
+    out_dir = OUT_DIR_BASE / f"{int(pressure_level_hpa)}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ds = xr.open_dataset(IN_PATH, chunks="auto")
@@ -157,7 +171,7 @@ def main():
     n = int(times.shape[0])
 
     lev_vals = ds[lev_name].values
-    lev_pick = ensure_level_value(lev_vals, PRESSURE_LEVEL)
+    lev_pick = ensure_level_value(lev_vals, pressure_level_hpa)
 
     time_block = infer_time_block_from_chunks(ds, t_name, z_name)
 
@@ -182,7 +196,7 @@ def main():
     print("OUT_DIR:", str(out_dir))
     print("var:", z_name)
     print("coords:", {"time": t_name, "level": lev_name, "lat": lat_name, "lon": lon_name})
-    print("requested PRESSURE_LEVEL (hPa):", float(PRESSURE_LEVEL))
+    print("requested PRESSURE_LEVEL (hPa):", float(pressure_level_hpa))
     print("picked level coord value (file units):", lev_pick)
     print("TIME_BLOCK:", time_block)
     print("DO_LON_HALF_ROLL:", DO_LON_HALF_ROLL, "| lon half-roll:", half)
@@ -250,7 +264,7 @@ def main():
 
             payload = {
                 "timestamp": tstamp,
-                "pressure_level_hpa": float(PRESSURE_LEVEL),
+                "pressure_level_hpa": float(pressure_level_hpa),
                 "picked_level_coord_value": float(lev_pick),
                 "contour_step_m": float(CONTOUR_STEP_M),
                 "levels": out_levels,
@@ -264,4 +278,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    main(args.pressure_level)

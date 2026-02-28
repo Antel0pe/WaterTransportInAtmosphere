@@ -1,4 +1,3 @@
-// app/api/evaporation/[datehour]/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
@@ -6,16 +5,12 @@ import path from "node:path";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/**
- * Parse a datehour string in the format: "YYYY-MM-DDTHH:mm"
- * Interprets the input as UTC.
- */
 function parseDatehour(datehour: string): Date {
   const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(datehour);
   if (!m) throw new Error("Invalid datehour");
 
   const year = Number(m[1]);
-  const month = Number(m[2]); // 1-12
+  const month = Number(m[2]);
   const day = Number(m[3]);
   const hour = Number(m[4]);
   const minute = Number(m[5]);
@@ -34,8 +29,6 @@ function parseDatehour(datehour: string): Date {
   }
 
   const dt = new Date(Date.UTC(year, month - 1, day, hour, minute, 0, 0));
-
-  // Validate normalization didn’t occur (e.g., Feb 30)
   if (
     dt.getUTCFullYear() !== year ||
     dt.getUTCMonth() !== month - 1 ||
@@ -49,7 +42,6 @@ function parseDatehour(datehour: string): Date {
   return dt;
 }
 
-/** Snap to hour since files are hourly. */
 function snapToHour(dt: Date): Date {
   return new Date(
     Date.UTC(
@@ -64,10 +56,6 @@ function snapToHour(dt: Date): Date {
   );
 }
 
-/**
- * Files look like: "2021-11-01T00-00-00.json"
- * We accept datehour to minute, but snap to hour and format to filename.
- */
 function toJsonFilename(dtHourly: Date): string {
   const y = dtHourly.getUTCFullYear();
   const mo = String(dtHourly.getUTCMonth() + 1).padStart(2, "0");
@@ -76,20 +64,33 @@ function toJsonFilename(dtHourly: Date): string {
   return `${y}-${mo}-${d}T${h}-00-00.json`;
 }
 
-/**
- * Extract a comparable key from a filename, or null if it doesn't match.
- * Comparable key is the filename itself (lexicographic sort works for this pattern).
- */
 function parseContourJsonName(name: string): string | null {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.json$/.test(name)) return null;
   return name;
 }
 
+function parsePressureFolder(raw: string): "msl" | "250" | "500" | "925" {
+  if (raw === "msl" || raw === "250" || raw === "500" || raw === "925") {
+    return raw;
+  }
+  throw new Error("Invalid pressure");
+}
+
 export async function GET(
   _req: NextRequest,
-  context: { params: Promise<{ datehour: string }> }
+  context: { params: Promise<{ pressure: string; datehour: string }> }
 ) {
-  const { datehour } = await context.params;
+  const { pressure: pressureRaw, datehour } = await context.params;
+
+  let pressureFolder: "msl" | "250" | "500" | "925";
+  try {
+    pressureFolder = parsePressureFolder(pressureRaw);
+  } catch {
+    return NextResponse.json(
+      { error: "Invalid pressure level (allowed: msl, 250, 500, 925)" },
+      { status: 400 }
+    );
+  }
 
   let target: Date;
   try {
@@ -103,8 +104,7 @@ export async function GET(
 
   const hourly = snapToHour(target);
   const filename = toJsonFilename(hourly);
-
-  const jsonDir = path.join(process.cwd(), "public", "msl_contours");
+  const jsonDir = path.join(process.cwd(), "public", "gph_contours", pressureFolder);
 
   let files: string[];
   try {
@@ -130,14 +130,7 @@ export async function GET(
 
   const firstKey = keys[0];
   const lastKey = keys[keys.length - 1];
-
-  // Out of bounds => 404
-  if (filename < firstKey || filename > lastKey) {
-    return NextResponse.json({ error: "no such hour exists" }, { status: 404 });
-  }
-
-  // In bounds but missing specific hour => 404
-  if (!keys.includes(filename)) {
+  if (filename < firstKey || filename > lastKey || !keys.includes(filename)) {
     return NextResponse.json({ error: "no such hour exists" }, { status: 404 });
   }
 
@@ -153,7 +146,6 @@ export async function GET(
     );
   }
 
-  // Return JSON bytes exactly as stored (no gz, no transform)
   return new NextResponse(new Uint8Array(buf), {
     status: 200,
     headers: {

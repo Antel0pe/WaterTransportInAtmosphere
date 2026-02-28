@@ -6,8 +6,6 @@ export type LayerToggles = {
   evaporation: boolean;
   ivt: boolean;
   pv: boolean;
-  mslContours: boolean;
-  windTrails: boolean;
 };
 
 type EvapParams = {
@@ -45,10 +43,25 @@ type MslContoursParams = {
   opacity: number;
 };
 
-type WindTrailsParams = {
-  dummy: number; // example param that doesn't do anything yet
-};
+export const CONTOURS_PRESSURE_OPTIONS = [
+  { value: "none", label: "None" },
+  { value: "msl", label: "MSL" },
+  { value: "250", label: "250 hPa" },
+  { value: "500", label: "500 hPa" },
+  { value: "925", label: "925 hPa" },
+] as const;
 
+export type ContoursPressure =
+  (typeof CONTOURS_PRESSURE_OPTIONS)[number]["value"];
+
+export const WIND_TRAILS_PRESSURE_OPTIONS = [
+  { value: "none", label: "None" },
+  { value: 250, label: "250 hPa" },
+  { value: 500, label: "500 hPa" },
+  { value: 925, label: "925 hPa" },
+] as const;
+
+export type WindTrailsPressure = (typeof WIND_TRAILS_PRESSURE_OPTIONS)[number]["value"];
 
 type ControlsState = {
   layers: LayerToggles;
@@ -57,6 +70,8 @@ type ControlsState = {
   ivt: IVTParams;
   pv: PVParams;
   mslContours: MslContoursParams;
+  contoursPressure: ContoursPressure;
+  windTrailsPressure: WindTrailsPressure;
 
   setLayer: (k: keyof LayerToggles, v: boolean) => void;
   setEvap: (patch: Partial<EvapParams>) => void;
@@ -64,9 +79,8 @@ type ControlsState = {
   setIVT: (patch: Partial<IVTParams>) => void;
   setPV: (patch: Partial<PVParams>) => void;
   setMslContours: (patch: Partial<MslContoursParams>) => void;
-
-  windTrails: WindTrailsParams;
-  setWindTrails: (patch: Partial<WindTrailsParams>) => void;
+  setContoursPressure: (pressure: ContoursPressure) => void;
+  setWindTrailsPressure: (pressure: WindTrailsPressure) => void;
 };
 
 export const useControls = create<ControlsState>()(
@@ -76,14 +90,13 @@ export const useControls = create<ControlsState>()(
       evaporation: false,
       ivt: false,
       pv: false,
-      mslContours: true,
-      windTrails: true,
     },
 
     mslContours: {
       contrast: 3.5,
       opacity: 0.95,
     },
+    contoursPressure: "msl",
 
     evap: {
       uEvapMin: -5e-4,
@@ -133,13 +146,9 @@ export const useControls = create<ControlsState>()(
 
     setMslContours: (patch) =>
       set((s) => ({ mslContours: { ...s.mslContours, ...patch } })),
-
-    windTrails: {
-      dummy: 1.0,
-    },
-
-    setWindTrails: (patch) =>
-      set((s) => ({ windTrails: { ...s.windTrails, ...patch } })),
+    setContoursPressure: (pressure) => set(() => ({ contoursPressure: pressure })),
+    windTrailsPressure: 925,
+    setWindTrailsPressure: (pressure) => set(() => ({ windTrailsPressure: pressure })),
   })),
 
 

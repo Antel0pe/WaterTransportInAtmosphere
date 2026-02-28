@@ -1,5 +1,5 @@
 // MslContoursLayer.tsx
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useEarthLayer } from "./EarthBase";
 import { useControls } from "../../state/controlsStore";
@@ -7,8 +7,14 @@ import { fetchMslContours, type MslContoursFile } from "../utils/ApiResponses";
 import { latLonToVec3 } from "../utils/EarthUtils";
 
 export default function MslContoursLayer() {
+  const contoursPressure = useControls((s) => s.contoursPressure);
+  const layerKey = useMemo(
+    () => `msl-contours-${contoursPressure}`,
+    [contoursPressure]
+  );
+
   const { engineReady, sceneRef, globeRef, timestamp, signalReady } =
-    useEarthLayer("msl_contours");
+    useEarthLayer(layerKey);
 
   const groupRef = useRef<THREE.Group | null>(null);
   const matsRef = useRef<Map<string, THREE.LineBasicMaterial>>(new Map());
@@ -25,15 +31,15 @@ export default function MslContoursLayer() {
     g.frustumCulled = false;
 
     const s = useControls.getState();
-    g.visible = s.layers.mslContours;
+    g.visible = s.contoursPressure !== "none";
 
     scene.add(g);
     groupRef.current = g;
 
     const unsubVis = useControls.subscribe(
-      (st) => st.layers.mslContours,
+      (st) => st.contoursPressure,
       (v) => {
-        g.visible = !!v;
+        g.visible = v !== "none";
       }
     );
 
@@ -79,21 +85,30 @@ export default function MslContoursLayer() {
       matsRef.current.clear();
     }
 
-    function computeMinMaxHpa(file: MslContoursFile): { min: number; max: number } {
-      // const keys = Object.keys(file.levels);
-      // let mn = Infinity;
-      // let mx = -Infinity;
-      // for (const k of keys) {
-      //   const v = parseFloat(k);
-      //   if (!Number.isFinite(v)) continue;
-      //   if (v < mn) mn = v;
-      //   if (v > mx) mx = v;
-      // }
-      // if (!Number.isFinite(mn) || !Number.isFinite(mx) || mn === mx) {
-      //   return { min: 920, max: 1060 };
-      // }
-      // return { min: mn, max: mx };
-      return { min: 920, max: 1060 };
+    function computeMinMaxHpa(
+      file: MslContoursFile,
+      pressure: Exclude<typeof contoursPressure, "none">
+    ): { min: number; max: number } {
+      const fallback: Record<Exclude<typeof contoursPressure, "none">, { min: number; max: number }> = {
+        msl: { min: 920, max: 1060 },
+        "250": { min: 9600, max: 11200 },
+        "500": { min: 4600, max: 6000 },
+        "925": { min: 500, max: 1100 },
+      };
+
+      const keys = Object.keys(file.levels);
+      let mn = Infinity;
+      let mx = -Infinity;
+      for (const k of keys) {
+        const v = Number(k);
+        if (!Number.isFinite(v)) continue;
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+      }
+      if (!Number.isFinite(mn) || !Number.isFinite(mx) || mn === mx) {
+        return fallback[pressure];
+      }
+      return { min: mn, max: mx };
     }
 
     function applyContrast(t: number, contrast: number) {
@@ -117,10 +132,15 @@ export default function MslContoursLayer() {
       return red.clone().lerp(green, t);
     }
 
-    function addContours(group: THREE.Group, file: MslContoursFile, R: number) {
+    function addContours(
+      group: THREE.Group,
+      file: MslContoursFile,
+      pressure: Exclude<typeof contoursPressure, "none">,
+      R: number
+    ) {
       const LIFT = R * 0.002;
 
-      const { min, max } = computeMinMaxHpa(file);
+      const { min, max } = computeMinMaxHpa(file, pressure);
 
       const s = useControls.getState();
       const contrast = s.mslContours.contrast;
@@ -181,20 +201,27 @@ export default function MslContoursLayer() {
       }
     }
 
+    if (contoursPressure === "none") {
+      clearGroup(g);
+      clearMaterialCache();
+      signalReady(timestamp);
+      return;
+    }
+
     (async () => {
       try {
         clearGroup(g);
         clearMaterialCache();
 
-        const file = await fetchMslContours(timestamp);
+        const file = await fetchMslContours(timestamp, contoursPressure);
         if (cancelled) return;
 
         const R = 100;
-        addContours(g, file, R);
+        addContours(g, file, contoursPressure, R);
 
         signalReady(timestamp);
       } catch (err) {
-        console.error("Failed to load/draw MSL contours", err);
+        console.error("Failed to load/draw contours", err);
         signalReady(timestamp);
       }
     })(); 
@@ -209,13 +236,13 @@ export default function MslContoursLayer() {
             clearGroup(g);
             clearMaterialCache();
 
-            const file = await fetchMslContours(timestamp);
+            const file = await fetchMslContours(timestamp, contoursPressure);
             if (cancelled) return;
 
             const R = 100;
-            addContours(g, file, R);
+            addContours(g, file, contoursPressure, R);
           } catch (err) {
-            console.error("Failed to redraw MSL contours after param change", err);
+            console.error("Failed to redraw contours after param change", err);
           }
         })();
       }
@@ -225,7 +252,7 @@ export default function MslContoursLayer() {
       cancelled = true;
       unsubParams();
     };
-  }, [engineReady, timestamp, signalReady]);
+  }, [engineReady, timestamp, signalReady, contoursPressure]);
 
   return null;
 }

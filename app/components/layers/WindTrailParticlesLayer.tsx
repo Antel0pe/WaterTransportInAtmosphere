@@ -805,20 +805,19 @@ export type WindLayerAPI = {
 };
 
 type Props = {
-  pressureLevel: number; // 925 for you, but keep generic
   heightTex: THREE.Texture | null;
   exaggeration?: number;
   setWindTex?: (tex: THREE.Texture) => void;
 };
 
 export default function WindTrailParticlesLayer({
-  pressureLevel,
   heightTex,
   exaggeration,
   setWindTex,
 }: Props) {
+  const windTrailsPressure = useControls((s) => s.windTrailsPressure);
   // Use EarthBase plumbing
-  const layerKey = useMemo(() => `wind-uv-${pressureLevel}`, [pressureLevel]);
+  const layerKey = useMemo(() => `wind-uv-${windTrailsPressure}`, [windTrailsPressure]);
   const {
     engineReady,
     rendererRef,
@@ -846,9 +845,13 @@ export default function WindTrailParticlesLayer({
     const renderer = rendererRef.current;
     const scene = sceneRef.current;
     if (!renderer || !scene) return;
+    if (windTrailsPressure === "none") {
+      signalReady(timestamp);
+      return;
+    }
 
     let disposed = false;
-    const url = windUvRgApiUrl(timestamp, 925);
+    const url = windUvRgApiUrl(timestamp, windTrailsPressure);
 
     const loader = new THREE.TextureLoader();
     loader.load(
@@ -878,7 +881,7 @@ export default function WindTrailParticlesLayer({
           buildWindLayer({
             renderer,
             scene,
-            pressureLevel,
+            pressureLevel: windTrailsPressure,
             heightTex,
             exaggeration: exaggeration ?? 0.5,
             texW,
@@ -890,7 +893,6 @@ export default function WindTrailParticlesLayer({
             uvPointsRef,
             zoomLevel: zoom01,
           });
-          uvPointsRef.current && (uvPointsRef.current.visible = useControls.getState().layers.windTrails);
 
           signalReady(timestamp);
           return;
@@ -915,7 +917,7 @@ export default function WindTrailParticlesLayer({
           buildWindLayer({
             renderer,
             scene,
-            pressureLevel,
+            pressureLevel: windTrailsPressure,
             heightTex,
             exaggeration: exaggeration ?? 0.5,
             texW,
@@ -927,7 +929,6 @@ export default function WindTrailParticlesLayer({
             uvPointsRef,
             zoomLevel: zoom01,
           });
-          uvPointsRef.current && (uvPointsRef.current.visible = useControls.getState().layers.windTrails);
 
           signalReady(timestamp);
           return;
@@ -953,7 +954,7 @@ export default function WindTrailParticlesLayer({
           buildWindLayer({
             renderer,
             scene,
-            pressureLevel,
+            pressureLevel: windTrailsPressure,
             heightTex,
             exaggeration: exaggeration ?? 0.5,
             texW,
@@ -965,7 +966,6 @@ export default function WindTrailParticlesLayer({
             uvPointsRef,
             zoomLevel: zoom01,
           });
-          uvPointsRef.current && (uvPointsRef.current.visible = useControls.getState().layers.windTrails);
 
           signalReady(timestamp);
           return;
@@ -1006,7 +1006,7 @@ export default function WindTrailParticlesLayer({
     rendererRef,
     sceneRef,
     timestamp,
-    pressureLevel,
+    windTrailsPressure,
     heightTex,
     exaggeration,
     registerFramePass,
@@ -1042,24 +1042,6 @@ export default function WindTrailParticlesLayer({
     L.ptsMat.uniforms.uTerrainTexture.value = heightTex;
     L.ptsMat.uniforms.uExaggeration.value = exaggeration ?? 0.5;
   }, [heightTex, exaggeration]);
-
-  useEffect(() => {
-    if (!engineReady) return;
-
-    const unsub = useControls.subscribe(
-      (s) => s.layers.windTrails,
-      (v) => {
-        if (uvPointsRef.current) uvPointsRef.current.visible = v;
-        // optional: if you have other meshes in apiRef.current, set them too
-      }
-    );
-
-    // also apply immediately in case points already exist
-    const v0 = useControls.getState().layers.windTrails;
-    if (uvPointsRef.current) uvPointsRef.current.visible = v0;
-
-    return () => unsub();
-  }, [engineReady]);
 
   return null;
 }

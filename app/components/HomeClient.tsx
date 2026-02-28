@@ -90,8 +90,8 @@ export default function HomeClient() {
             <IVTLayer />
             <PotentialVorticityLayer />
             <MslContoursLayer />
-            <WindUVArrowsLayer />
-            <WindTrailParticlesLayer pressureLevel={925} heightTex={null}/>
+            {/* <WindUVArrowsLayer /> */}
+            <WindTrailParticlesLayer heightTex={null} />
             {/* <TestWindLayer /> */}
           </EarthBase>
         </div>

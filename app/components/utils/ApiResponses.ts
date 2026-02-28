@@ -10,8 +10,10 @@ export function ivtApiUrl(datehour: string) {
   return `/api/ivt/${encodeURIComponent(datehour)}`;
 }
 
-export function mslContoursApiUrl(datehour: string) {
-  return `/api/msl_contours/${encodeURIComponent(datehour)}`;
+export type ContoursPressure = "msl" | "250" | "500" | "925";
+
+export function mslContoursApiUrl(datehour: string, pressure: ContoursPressure) {
+  return `/api/msl_contours/${encodeURIComponent(String(pressure))}/${encodeURIComponent(datehour)}`;
 }
 
 export type LonLat = [number, number];
@@ -24,8 +26,11 @@ export type MslContoursFile = {
   levels: ContourLevels; // keys like "960.0"
 };
 
-export async function fetchMslContours(datehour: string): Promise<MslContoursFile> {
-  const res = await fetch(mslContoursApiUrl(datehour));
+export async function fetchMslContours(
+  datehour: string,
+  pressure: ContoursPressure
+): Promise<MslContoursFile> {
+  const res = await fetch(mslContoursApiUrl(datehour, pressure));
 
   if (!res.ok) {
     throw new Error(`MSL contours fetch failed (${res.status} ${res.statusText})`);

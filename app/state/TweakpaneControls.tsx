@@ -2,7 +2,14 @@
 
 import { useEffect, useRef } from "react";
 import { Pane } from "tweakpane";
-import { LayerToggles, useControls } from "../state/controlsStore";
+import {
+  CONTOURS_PRESSURE_OPTIONS,
+  ContoursPressure,
+  LayerToggles,
+  useControls,
+  WIND_TRAILS_PRESSURE_OPTIONS,
+  WindTrailsPressure,
+} from "../state/controlsStore";
 
 export default function TweakpaneControls() {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -48,15 +55,18 @@ export default function TweakpaneControls() {
       pvGamma: s0.pv.uGamma,
       pvAlpha: s0.pv.uAlpha,
 
-      mslContours: s0.layers.mslContours,
-
       mslContrast: s0.mslContours.contrast,
       mslOpacity: s0.mslContours.opacity,
+      contoursPressure: s0.contoursPressure as ContoursPressure,
 
-      windTrails: s0.layers.windTrails,
-
-      windDummy: s0.windTrails.dummy,
+      windTrailsPressure: s0.windTrailsPressure as WindTrailsPressure,
     };
+    const contoursPressureOptions = Object.fromEntries(
+      CONTOURS_PRESSURE_OPTIONS.map((opt) => [opt.label, opt.value])
+    );
+    const windTrailsPressureOptions = Object.fromEntries(
+      WIND_TRAILS_PRESSURE_OPTIONS.map((opt) => [opt.label, opt.value])
+    );
 
     // ---- Reset ----
     const defaults = {
@@ -66,7 +76,8 @@ export default function TweakpaneControls() {
       ivt: { ...s0.ivt },
       pv: { ...s0.pv },
       mslContours: { ...s0.mslContours },
-      windTrails: { ...s0.windTrails },
+      contoursPressure: s0.contoursPressure as ContoursPressure,
+      windTrailsPressure: s0.windTrailsPressure as WindTrailsPressure,
     };
 
     pane.addButton({ title: "Reset to defaults" }).on("click", () => {
@@ -86,7 +97,6 @@ export default function TweakpaneControls() {
       ui.evaporation = defaults.layers.evaporation;
       ui.ivt = defaults.layers.ivt;
       ui.pv = defaults.layers.pv;
-      ui.mslContours = defaults.layers.mslContours;
 
       ui.uAnomMin = defaults.moisture.uAnomMin;
       ui.uAnomMax = defaults.moisture.uAnomMax;
@@ -112,10 +122,11 @@ export default function TweakpaneControls() {
 
       ui.mslContrast = defaults.mslContours.contrast;
       ui.mslOpacity = defaults.mslContours.opacity;
+      ui.contoursPressure = defaults.contoursPressure;
+      st.setContoursPressure(defaults.contoursPressure);
 
-      ui.windTrails = defaults.layers.windTrails;
-      ui.windDummy = defaults.windTrails.dummy;
-      st.setWindTrails(defaults.windTrails);
+      ui.windTrailsPressure = defaults.windTrailsPressure;
+      st.setWindTrailsPressure(defaults.windTrailsPressure);
       st.setPV(defaults.pv);
 
       pane.refresh();
@@ -420,12 +431,15 @@ export default function TweakpaneControls() {
       }
     );
 
-    const bMslContours = layersFolder.addBinding(ui, "mslContours", { label: "MSL Contours" });
-    bMslContours.on("change", (e) => {
-      useControls.getState().setLayer("mslContours", !!e.value);
+    const bContoursPressure = layersFolder.addBinding(ui, "contoursPressure", {
+      label: "Contours",
+      options: contoursPressureOptions,
+    });
+    bContoursPressure.on("change", (e) => {
+      useControls.getState().setContoursPressure(e.value as ContoursPressure);
     });
 
-    const mslFolder = pane.addFolder({ title: "MSL Contours Params" });
+    const mslFolder = pane.addFolder({ title: "Contours Params" });
 
     const bMslContrast = mslFolder.addBinding(ui, "mslContrast", {
       label: "contrast",
@@ -442,31 +456,13 @@ export default function TweakpaneControls() {
 
     bMslContrast.on("change", (e) => useControls.getState().setMslContours({ contrast: Number(e.value) }));
     bMslOpacity.on("change", (e) => useControls.getState().setMslContours({ opacity: Number(e.value) }));
-
-    const bWindTrails = layersFolder.addBinding(ui, "windTrails", { label: "Wind Trails" });
-    bWindTrails.on("change", (e) => {
-      useControls.getState().setLayer("windTrails", !!e.value);
+    const bWindTrailsPressure = layersFolder.addBinding(ui, "windTrailsPressure", {
+      label: "Wind Trails",
+      options: windTrailsPressureOptions,
     });
-    const windFolder = pane.addFolder({ title: "Wind Trails Params" });
-
-    const bWindDummy = windFolder.addBinding(ui, "windDummy", {
-      label: "dummy",
-      min: 0.0,
-      max: 10.0,
-      step: 0.1,
+    bWindTrailsPressure.on("change", (e) => {
+      useControls.getState().setWindTrailsPressure(e.value as WindTrailsPressure);
     });
-
-    bWindDummy.on("change", (e) => {
-      useControls.getState().setWindTrails({ dummy: Number(e.value) });
-    });
-
-    const unsubMslVis = useControls.subscribe(
-      (s) => s.layers.mslContours,
-      (v) => {
-        ui.mslContours = v;
-        pane.refresh();
-      }
-    );
 
     const unsubMslParams = useControls.subscribe(
       (s) => s.mslContours,
@@ -476,19 +472,18 @@ export default function TweakpaneControls() {
         pane.refresh();
       }
     );
-
-    const unsubWindVis = useControls.subscribe(
-      (s) => s.layers.windTrails,
+    const unsubContoursPressure = useControls.subscribe(
+      (s) => s.contoursPressure,
       (v) => {
-        ui.windTrails = v;
+        ui.contoursPressure = v as ContoursPressure;
         pane.refresh();
       }
     );
 
-    const unsubWindParams = useControls.subscribe(
-      (s) => s.windTrails,
-      (p) => {
-        ui.windDummy = p.dummy;
+    const unsubWindPressure = useControls.subscribe(
+      (s) => s.windTrailsPressure,
+      (v) => {
+        ui.windTrailsPressure = v as WindTrailsPressure;
         pane.refresh();
       }
     );
@@ -504,11 +499,9 @@ export default function TweakpaneControls() {
       unsubIVTParams();
       unsubPVVis();
       unsubPVParams();
-      unsubMslVis();
       unsubMslParams();
-      unsubWindVis();
-      unsubWindParams();
-
+      unsubContoursPressure();
+      unsubWindPressure();
 
       pane.dispose();
       pane.element.remove();
