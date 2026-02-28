@@ -24,6 +24,7 @@ export default function TweakpaneControls() {
       moisture: s0.layers.moisture,
       evaporation: s0.layers.evaporation,
       ivt: s0.layers.ivt,
+      pv: s0.layers.pv,
 
       uAnomMin: s0.moisture.uAnomMin,
       uAnomMax: s0.moisture.uAnomMax,
@@ -41,6 +42,12 @@ export default function TweakpaneControls() {
       ivtScale: s0.ivt.uScale,
       ivtGamma: s0.ivt.uGamma,
 
+      pvPressureLevel: s0.pv.pressureLevel,
+      uPvMin: s0.pv.uPvMin,
+      uPvMax: s0.pv.uPvMax,
+      pvGamma: s0.pv.uGamma,
+      pvAlpha: s0.pv.uAlpha,
+
       mslContours: s0.layers.mslContours,
 
       mslContrast: s0.mslContours.contrast,
@@ -57,6 +64,7 @@ export default function TweakpaneControls() {
       moisture: { ...s0.moisture },
       evap: { ...s0.evap },
       ivt: { ...s0.ivt },
+      pv: { ...s0.pv },
       mslContours: { ...s0.mslContours },
       windTrails: { ...s0.windTrails },
     };
@@ -77,6 +85,7 @@ export default function TweakpaneControls() {
       ui.moisture = defaults.layers.moisture;
       ui.evaporation = defaults.layers.evaporation;
       ui.ivt = defaults.layers.ivt;
+      ui.pv = defaults.layers.pv;
       ui.mslContours = defaults.layers.mslContours;
 
       ui.uAnomMin = defaults.moisture.uAnomMin;
@@ -95,12 +104,19 @@ export default function TweakpaneControls() {
       ui.ivtScale = defaults.ivt.uScale;
       ui.ivtGamma = defaults.ivt.uGamma;
 
+      ui.pvPressureLevel = defaults.pv.pressureLevel;
+      ui.uPvMin = defaults.pv.uPvMin;
+      ui.uPvMax = defaults.pv.uPvMax;
+      ui.pvGamma = defaults.pv.uGamma;
+      ui.pvAlpha = defaults.pv.uAlpha;
+
       ui.mslContrast = defaults.mslContours.contrast;
       ui.mslOpacity = defaults.mslContours.opacity;
 
       ui.windTrails = defaults.layers.windTrails;
       ui.windDummy = defaults.windTrails.dummy;
       st.setWindTrails(defaults.windTrails);
+      st.setPV(defaults.pv);
 
       pane.refresh();
     });
@@ -227,6 +243,11 @@ export default function TweakpaneControls() {
       useControls.getState().setLayer("ivt", !!e.value);
     });
 
+    const bPV = layersFolder.addBinding(ui, "pv", { label: "Potential Vorticity" });
+    bPV.on("change", (e) => {
+      useControls.getState().setLayer("pv", !!e.value);
+    });
+
     const ivtFolder = pane.addFolder({ title: "IVT Params" });
 
     const bIvtMin = ivtFolder.addBinding(ui, "uIvtMin", {
@@ -267,6 +288,56 @@ export default function TweakpaneControls() {
     });
     bIvtGamma.on("change", (e) => {
       useControls.getState().setIVT({ uGamma: Number(e.value) });
+    });
+
+    const pvFolder = pane.addFolder({ title: "Potential Vorticity Params" });
+    const bPvLevel = pvFolder.addBinding(ui, "pvPressureLevel", {
+      label: "pressure",
+      options: {
+        "250 hPa": 250,
+        "500 hPa": 500,
+        "925 hPa": 925,
+      },
+    });
+    const bPvMin = pvFolder.addBinding(ui, "uPvMin", {
+      label: "uPvMin",
+      min: -5e-6,
+      max: 5e-5,
+      step: 1e-7,
+    });
+    const bPvMax = pvFolder.addBinding(ui, "uPvMax", {
+      label: "uPvMax",
+      min: 1e-7,
+      max: 8e-5,
+      step: 1e-7,
+    });
+    const bPvGamma = pvFolder.addBinding(ui, "pvGamma", {
+      label: "gamma",
+      min: 0.1,
+      max: 3.0,
+      step: 0.05,
+    });
+    const bPvAlpha = pvFolder.addBinding(ui, "pvAlpha", {
+      label: "alpha",
+      min: 0.0,
+      max: 1.0,
+      step: 0.01,
+    });
+
+    bPvLevel.on("change", (e) => {
+      useControls.getState().setPV({ pressureLevel: Number(e.value) });
+    });
+    bPvMin.on("change", (e) => {
+      useControls.getState().setPV({ uPvMin: Number(e.value) });
+    });
+    bPvMax.on("change", (e) => {
+      useControls.getState().setPV({ uPvMax: Number(e.value) });
+    });
+    bPvGamma.on("change", (e) => {
+      useControls.getState().setPV({ uGamma: Number(e.value) });
+    });
+    bPvAlpha.on("change", (e) => {
+      useControls.getState().setPV({ uAlpha: Number(e.value) });
     });
 
 
@@ -318,6 +389,14 @@ export default function TweakpaneControls() {
       }
     );
 
+    const unsubPVVis = useControls.subscribe(
+      (s) => s.layers.pv,
+      (v) => {
+        ui.pv = v;
+        pane.refresh();
+      }
+    );
+
     const unsubIVTParams = useControls.subscribe(
       (s) => s.ivt,
       (p) => {
@@ -325,6 +404,18 @@ export default function TweakpaneControls() {
         ui.uIvtMax = p.uIvtMax;
         ui.ivtScale = p.uScale;
         ui.ivtGamma = p.uGamma;
+        pane.refresh();
+      }
+    );
+
+    const unsubPVParams = useControls.subscribe(
+      (s) => s.pv,
+      (p) => {
+        ui.pvPressureLevel = p.pressureLevel;
+        ui.uPvMin = p.uPvMin;
+        ui.uPvMax = p.uPvMax;
+        ui.pvGamma = p.uGamma;
+        ui.pvAlpha = p.uAlpha;
         pane.refresh();
       }
     );
@@ -411,6 +502,8 @@ export default function TweakpaneControls() {
       unsubEvapParams();
       unsubIVTVis();
       unsubIVTParams();
+      unsubPVVis();
+      unsubPVParams();
       unsubMslVis();
       unsubMslParams();
       unsubWindVis();

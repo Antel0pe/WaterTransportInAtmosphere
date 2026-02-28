@@ -5,6 +5,7 @@ export type LayerToggles = {
   moisture: boolean;
   evaporation: boolean;
   ivt: boolean;
+  pv: boolean;
   mslContours: boolean;
   windTrails: boolean;
 };
@@ -31,6 +32,14 @@ type IVTParams = {
   uGamma: number;    // NEW
 };
 
+type PVParams = {
+  pressureLevel: number;
+  uPvMin: number;
+  uPvMax: number;
+  uGamma: number;
+  uAlpha: number;
+};
+
 type MslContoursParams = {
   contrast: number;
   opacity: number;
@@ -46,12 +55,14 @@ type ControlsState = {
   evap: EvapParams;
   moisture: MoistureParams;
   ivt: IVTParams;
+  pv: PVParams;
   mslContours: MslContoursParams;
 
   setLayer: (k: keyof LayerToggles, v: boolean) => void;
   setEvap: (patch: Partial<EvapParams>) => void;
   setMoisture: (patch: Partial<MoistureParams>) => void;
   setIVT: (patch: Partial<IVTParams>) => void;
+  setPV: (patch: Partial<PVParams>) => void;
   setMslContours: (patch: Partial<MslContoursParams>) => void;
 
   windTrails: WindTrailsParams;
@@ -64,6 +75,7 @@ export const useControls = create<ControlsState>()(
       moisture: true,
       evaporation: false,
       ivt: false,
+      pv: false,
       mslContours: true,
       windTrails: true,
     },
@@ -96,6 +108,14 @@ export const useControls = create<ControlsState>()(
       uGamma: 0.85,
     },
 
+    pv: {
+      pressureLevel: 250,
+      uPvMin: -2e-6,
+      uPvMax: 2.4e-5,
+      uGamma: 0.9,
+      uAlpha: 0.9,
+    },
+
     setLayer: (k, v) =>
       set((s) => ({ layers: { ...s.layers, [k]: v } })),
 
@@ -107,6 +127,9 @@ export const useControls = create<ControlsState>()(
 
     setIVT: (patch) =>
       set((s) => ({ ivt: { ...s.ivt, ...patch } })),
+
+    setPV: (patch) =>
+      set((s) => ({ pv: { ...s.pv, ...patch } })),
 
     setMslContours: (patch) =>
       set((s) => ({ mslContours: { ...s.mslContours, ...patch } })),

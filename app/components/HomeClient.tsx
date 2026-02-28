@@ -25,6 +25,11 @@ const IVTLayer = dynamic(() => import("./layers/IVT_Layer"), {
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
 
+const PotentialVorticityLayer = dynamic(() => import("./layers/PotentialVorticityLayer"), {
+  ssr: false,
+  loading: () => <div style={{ width: "100%", height: "100%" }} />,
+});
+
 const MslContoursLayer = dynamic(() => import("./layers/MslContoursLayer"), {
   ssr: false,
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
@@ -36,11 +41,6 @@ const WindUVArrowsLayer = dynamic(() => import("./layers/WindUVArrowsLayer"), {
 });
 
 const WindTrailParticlesLayer = dynamic(() => import("./layers/WindTrailParticlesLayer"), {
-  ssr: false,
-  loading: () => <div style={{ width: "100%", height: "100%" }} />,
-});
-
-const TestWindLayer = dynamic(() => import("./layers/TestWindLayer"), {
   ssr: false,
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
@@ -88,6 +88,7 @@ export default function HomeClient() {
             <MoistureTransportLayer />
             <EvaporationLayer />
             <IVTLayer />
+            <PotentialVorticityLayer />
             <MslContoursLayer />
             <WindUVArrowsLayer />
             <WindTrailParticlesLayer pressureLevel={925} heightTex={null}/>

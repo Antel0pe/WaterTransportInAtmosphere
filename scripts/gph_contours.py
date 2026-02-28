@@ -14,7 +14,7 @@ IN_PATH = Path("../data/era5_2021-nov_250-500-925_uv_pv_gph.nc")
 
 # Base output directory. Actual output will be:
 #   OUT_DIR_BASE/<PRESSURE_LEVEL>hpa/*.json
-OUT_DIR_BASE = Path("../data/gph_contours")
+OUT_DIR_BASE = Path("../public/gph_contours")
 
 # Pick one of the levels present in the file (e.g. 250, 500, 925)
 PRESSURE_LEVEL = 250  # hPa

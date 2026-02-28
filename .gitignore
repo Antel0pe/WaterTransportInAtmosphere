@@ -6,6 +6,7 @@ data/
 /public/ivt-925-1000/*
 /public/msl_contours/*
 /public/wind-uv-rg/*
+/public/potential-vorticity-rg/*
 # dependencies
 /node_modules
 /.pnp

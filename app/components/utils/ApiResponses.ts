@@ -37,3 +37,7 @@ export async function fetchMslContours(datehour: string): Promise<MslContoursFil
 export function windUvRgApiUrl(datehour: string, pressureLevel: number) {
   return `/api/wind_uv/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
 }
+
+export function potentialVorticityApiUrl(datehour: string, pressureLevel: number) {
+  return `/api/potential_vorticity/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
+}
