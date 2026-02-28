@@ -176,19 +176,26 @@ def main(pressure_level_hpa: float):
     time_block = infer_time_block_from_chunks(ds, t_name, z_name)
 
     # longitude handling for contour conversion
-    lon_raw = ds[lon_name].values
+    lon_raw = ds[lon_name].values.astype(np.float64)
     lat = ds[lat_name].values.astype(np.float64)
 
     half = ds.sizes[lon_name] // 2
 
-    # If you half-roll, your lon coords are still 0..360 but the *data* is rolled;
-    # for coordinate interpolation, we build lon_sorted aligned to the rolled order.
-    lon_wrapped = wrap_lon_to_180(lon_raw)
-    lon_order = np.argsort(lon_wrapped)
-    lon_sorted = lon_wrapped[lon_order].astype(np.float64)
+    # IMPORTANT:
+    # Apply longitude reindexing exactly once.
+    # - With half-roll enabled, data is already shifted to the same -180..180
+    #   orientation used by wind texture export, so we use rolled longitudes directly.
+    # - Without half-roll, we sort wrapped longitudes and reorder data to match.
+    lon_order = None
+    if DO_LON_HALF_ROLL:
+        lon_for_interp = wrap_lon_to_180(np.roll(lon_raw, -half)).astype(np.float64)
+    else:
+        lon_wrapped = wrap_lon_to_180(lon_raw)
+        lon_order = np.argsort(lon_wrapped)
+        lon_for_interp = lon_wrapped[lon_order].astype(np.float64)
 
     ny = lat.size
-    nx = lon_sorted.size
+    nx = lon_for_interp.size
     x_idx = np.arange(nx, dtype=np.float64)
     y_idx = np.arange(ny, dtype=np.float64)
 
@@ -217,9 +224,8 @@ def main(pressure_level_hpa: float):
         # compute this time-block once
         z_blk_np = np.asarray(z_blk.data).astype(np.float32)
 
-        # Now: align longitudes to lon_sorted via a consistent ordering.
-        # We take the rolled data, then reorder longitudes by lon_order (wrap+sort).
-        z_blk_np = z_blk_np[:, :, lon_order]
+        if lon_order is not None:
+            z_blk_np = z_blk_np[:, :, lon_order]
 
         for j in range(t1 - t0):
             i = t0 + j
@@ -254,7 +260,7 @@ def main(pressure_level_hpa: float):
                     r = np.clip(cont[:, 0], 0.0, ny - 1.0)
                     c = np.clip(cont[:, 1], 0.0, nx - 1.0)
 
-                    lonc = np.interp(c, x_idx, lon_sorted)
+                    lonc = np.interp(c, x_idx, lon_for_interp)
                     latc = np.interp(r, y_idx, lat)
                     lonc = wrap_lon_to_180(lonc)
 
