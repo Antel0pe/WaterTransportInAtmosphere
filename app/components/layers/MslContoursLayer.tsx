@@ -129,7 +129,7 @@ export default function MslContoursLayer() {
       const red = new THREE.Color(1.0, 0.0, 0.35);   // slightly magenta-red (pops on ocean)
       const green = new THREE.Color(0.0, 1.0, 0.15); // slightly yellow-green (also pops)
 
-      return red.clone().lerp(green, t);
+      return green.clone().lerp(red, t);
     }
 
     function addContours(

@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { useEarthLayer } from "./EarthBase";
 import { potentialVorticityApiUrl } from "../utils/ApiResponses";
-import { useControls } from "../../state/controlsStore";
+import { PVPressure, useControls } from "../../state/controlsStore";
 
 const SUPPORTED_LEVELS = [250, 500, 925] as const;
 
@@ -10,6 +10,13 @@ function defaultPvRangeForLevel(level: number): { min: number; max: number } {
   if (level <= 300) return { min: -2e-6, max: 2.4e-5 };
   if (level <= 700) return { min: -1e-6, max: 1.2e-5 };
   return { min: -2e-7, max: 4e-6 };
+}
+
+function resolvePvLevel(
+  pressure: PVPressure
+): (typeof SUPPORTED_LEVELS)[number] | null {
+  if (pressure === "none") return null;
+  return SUPPORTED_LEVELS.includes(pressure) ? pressure : 250;
 }
 
 export default function PotentialVorticityLayer() {
@@ -22,7 +29,8 @@ export default function PotentialVorticityLayer() {
 
     const scene = sceneRef.current;
     const s = useControls.getState();
-    const r = defaultPvRangeForLevel(s.pv.pressureLevel);
+    const level = resolvePvLevel(s.pv.pressureLevel) ?? 250;
+    const r = defaultPvRangeForLevel(level);
 
     const R = 100;
     const LIFT = R * 0.0022;
@@ -96,7 +104,7 @@ export default function PotentialVorticityLayer() {
     mesh.name = "potential-vorticity-layer";
     mesh.renderOrder = 56;
     mesh.frustumCulled = false;
-    mesh.visible = s.layers.pv;
+    mesh.visible = s.pv.pressureLevel !== "none";
 
     scene.add(mesh);
     meshRef.current = mesh;
@@ -118,17 +126,12 @@ export default function PotentialVorticityLayer() {
 
     const mat = mesh.material as THREE.ShaderMaterial;
 
-    const unsubVis = useControls.subscribe(
-      (st) => st.layers.pv,
-      (v) => {
-        mesh.visible = v;
-      }
-    );
-
     const unsubParams = useControls.subscribe(
       (st) => st.pv,
       (p) => {
-        const r = defaultPvRangeForLevel(p.pressureLevel);
+        const level = resolvePvLevel(p.pressureLevel) ?? 250;
+        const r = defaultPvRangeForLevel(level);
+        mesh.visible = p.pressureLevel !== "none";
         mat.uniforms.uDataMin.value = r.min;
         mat.uniforms.uDataMax.value = r.max;
         mat.uniforms.uDisplayMin.value = p.uPvMin;
@@ -139,7 +142,6 @@ export default function PotentialVorticityLayer() {
     );
 
     return () => {
-      unsubVis();
       unsubParams();
     };
   }, [engineReady]);
@@ -152,7 +154,14 @@ export default function PotentialVorticityLayer() {
     let cancelled = false;
     const mat = mesh.material as THREE.ShaderMaterial;
     const pressure = useControls.getState().pv.pressureLevel;
-    const level = SUPPORTED_LEVELS.includes(pressure as (typeof SUPPORTED_LEVELS)[number]) ? pressure : 250;
+    const level = resolvePvLevel(pressure);
+    if (level === null) {
+      mesh.visible = false;
+      signalReady(timestamp);
+      return;
+    }
+
+    mesh.visible = true;
     const url = potentialVorticityApiUrl(timestamp, level);
 
     new THREE.TextureLoader().load(
@@ -191,12 +200,17 @@ export default function PotentialVorticityLayer() {
     if (!engineReady) return;
     const unsubPressure = useControls.subscribe(
       (st) => st.pv.pressureLevel,
-      () => {
+      (pressure) => {
         const mesh = meshRef.current;
         if (!mesh) return;
         const mat = mesh.material as THREE.ShaderMaterial;
-        const pressure = useControls.getState().pv.pressureLevel;
-        const level = SUPPORTED_LEVELS.includes(pressure as (typeof SUPPORTED_LEVELS)[number]) ? pressure : 250;
+        mesh.visible = pressure !== "none";
+        const level = resolvePvLevel(pressure);
+        if (level === null) {
+          signalReady(timestamp);
+          return;
+        }
+
         const url = potentialVorticityApiUrl(timestamp, level);
 
         new THREE.TextureLoader().load(

@@ -5,11 +5,13 @@ import { Pane } from "tweakpane";
 import {
   CONTOURS_PRESSURE_OPTIONS,
   ContoursPressure,
-  LayerToggles,
+  PVPressure,
+  PV_PRESSURE_OPTIONS,
   useControls,
   WIND_TRAILS_PRESSURE_OPTIONS,
   WindTrailsPressure,
 } from "../state/controlsStore";
+import { addButtonRowToFolder, addSeparatorToFolder } from "./TweakpaneUtils";
 
 export default function TweakpaneControls() {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -31,7 +33,6 @@ export default function TweakpaneControls() {
       moisture: s0.layers.moisture,
       evaporation: s0.layers.evaporation,
       ivt: s0.layers.ivt,
-      pv: s0.layers.pv,
 
       uAnomMin: s0.moisture.uAnomMin,
       uAnomMax: s0.moisture.uAnomMax,
@@ -61,12 +62,6 @@ export default function TweakpaneControls() {
 
       windTrailsPressure: s0.windTrailsPressure as WindTrailsPressure,
     };
-    const contoursPressureOptions = Object.fromEntries(
-      CONTOURS_PRESSURE_OPTIONS.map((opt) => [opt.label, opt.value])
-    );
-    const windTrailsPressureOptions = Object.fromEntries(
-      WIND_TRAILS_PRESSURE_OPTIONS.map((opt) => [opt.label, opt.value])
-    );
 
     // ---- Reset ----
     const defaults = {
@@ -79,12 +74,15 @@ export default function TweakpaneControls() {
       contoursPressure: s0.contoursPressure as ContoursPressure,
       windTrailsPressure: s0.windTrailsPressure as WindTrailsPressure,
     };
+    let pvButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
+    let contoursButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
+    let windButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
 
     pane.addButton({ title: "Reset to defaults" }).on("click", () => {
       const st = useControls.getState();
 
       // update store
-      (Object.keys(defaults.layers) as (keyof LayerToggles)[]).forEach((k) => {
+      (Object.keys(defaults.layers) as Array<keyof typeof defaults.layers>).forEach((k) => {
         st.setLayer(k, defaults.layers[k]);
       });
       st.setMoisture(defaults.moisture);
@@ -96,7 +94,6 @@ export default function TweakpaneControls() {
       ui.moisture = defaults.layers.moisture;
       ui.evaporation = defaults.layers.evaporation;
       ui.ivt = defaults.layers.ivt;
-      ui.pv = defaults.layers.pv;
 
       ui.uAnomMin = defaults.moisture.uAnomMin;
       ui.uAnomMax = defaults.moisture.uAnomMax;
@@ -128,8 +125,11 @@ export default function TweakpaneControls() {
       ui.windTrailsPressure = defaults.windTrailsPressure;
       st.setWindTrailsPressure(defaults.windTrailsPressure);
       st.setPV(defaults.pv);
+      pvButtonsApi?.setSelectedValue(defaults.pv.pressureLevel);
+      contoursButtonsApi?.setSelectedValue(defaults.contoursPressure);
+      windButtonsApi?.setSelectedValue(defaults.windTrailsPressure);
 
-      pane.refresh();
+      
     });
 
     // ---- Layers ----
@@ -254,11 +254,6 @@ export default function TweakpaneControls() {
       useControls.getState().setLayer("ivt", !!e.value);
     });
 
-    const bPV = layersFolder.addBinding(ui, "pv", { label: "Potential Vorticity" });
-    bPV.on("change", (e) => {
-      useControls.getState().setLayer("pv", !!e.value);
-    });
-
     const ivtFolder = pane.addFolder({ title: "IVT Params" });
 
     const bIvtMin = ivtFolder.addBinding(ui, "uIvtMin", {
@@ -302,14 +297,6 @@ export default function TweakpaneControls() {
     });
 
     const pvFolder = pane.addFolder({ title: "Potential Vorticity Params" });
-    const bPvLevel = pvFolder.addBinding(ui, "pvPressureLevel", {
-      label: "pressure",
-      options: {
-        "250 hPa": 250,
-        "500 hPa": 500,
-        "925 hPa": 925,
-      },
-    });
     const bPvMin = pvFolder.addBinding(ui, "uPvMin", {
       label: "uPvMin",
       min: -5e-6,
@@ -335,9 +322,6 @@ export default function TweakpaneControls() {
       step: 0.01,
     });
 
-    bPvLevel.on("change", (e) => {
-      useControls.getState().setPV({ pressureLevel: Number(e.value) });
-    });
     bPvMin.on("change", (e) => {
       useControls.getState().setPV({ uPvMin: Number(e.value) });
     });
@@ -357,7 +341,7 @@ export default function TweakpaneControls() {
       (s) => s.layers.moisture,
       (v) => {
         ui.moisture = v;
-        pane.refresh();
+        
       }
     );
 
@@ -365,7 +349,7 @@ export default function TweakpaneControls() {
       (s) => s.layers.evaporation,
       (v) => {
         ui.evaporation = v;
-        pane.refresh();
+        
       }
     );
 
@@ -376,7 +360,7 @@ export default function TweakpaneControls() {
         ui.uAnomMax = p.uAnomMax;
         ui.moistureThreshold = p.uThreshold;
         ui.moistureGamma = p.uGamma;
-        pane.refresh();
+        
       }
     );
 
@@ -388,7 +372,7 @@ export default function TweakpaneControls() {
         ui.evapThreshold = p.uThreshold;
         ui.evapGamma = p.uGamma;
         ui.uAlphaScale = p.uAlphaScale;
-        pane.refresh();
+        
       }
     );
 
@@ -396,15 +380,7 @@ export default function TweakpaneControls() {
       (s) => s.layers.ivt,
       (v) => {
         ui.ivt = v;
-        pane.refresh();
-      }
-    );
-
-    const unsubPVVis = useControls.subscribe(
-      (s) => s.layers.pv,
-      (v) => {
-        ui.pv = v;
-        pane.refresh();
+        
       }
     );
 
@@ -415,7 +391,7 @@ export default function TweakpaneControls() {
         ui.uIvtMax = p.uIvtMax;
         ui.ivtScale = p.uScale;
         ui.ivtGamma = p.uGamma;
-        pane.refresh();
+        
       }
     );
 
@@ -427,17 +403,10 @@ export default function TweakpaneControls() {
         ui.uPvMax = p.uPvMax;
         ui.pvGamma = p.uGamma;
         ui.pvAlpha = p.uAlpha;
-        pane.refresh();
+        pvButtonsApi?.setSelectedValue(p.pressureLevel);
+        
       }
     );
-
-    const bContoursPressure = layersFolder.addBinding(ui, "contoursPressure", {
-      label: "Contours",
-      options: contoursPressureOptions,
-    });
-    bContoursPressure.on("change", (e) => {
-      useControls.getState().setContoursPressure(e.value as ContoursPressure);
-    });
 
     const mslFolder = pane.addFolder({ title: "Contours Params" });
 
@@ -456,12 +425,53 @@ export default function TweakpaneControls() {
 
     bMslContrast.on("change", (e) => useControls.getState().setMslContours({ contrast: Number(e.value) }));
     bMslOpacity.on("change", (e) => useControls.getState().setMslContours({ opacity: Number(e.value) }));
-    const bWindTrailsPressure = layersFolder.addBinding(ui, "windTrailsPressure", {
-      label: "Wind Trails",
-      options: windTrailsPressureOptions,
+
+    addSeparatorToFolder(layersFolder);
+    pvButtonsApi = addButtonRowToFolder(layersFolder, {
+      label: "PV",
+      selectedValue: ui.pvPressureLevel,
+      buttons: PV_PRESSURE_OPTIONS.map((opt) => ({
+        title: opt.label,
+        value: opt.value,
+        onClick: () => {
+          const v = opt.value as PVPressure;
+          useControls.getState().setPV({ pressureLevel: v });
+          ui.pvPressureLevel = v;
+          
+        },
+      })),
     });
-    bWindTrailsPressure.on("change", (e) => {
-      useControls.getState().setWindTrailsPressure(e.value as WindTrailsPressure);
+
+    addSeparatorToFolder(layersFolder);
+    contoursButtonsApi = addButtonRowToFolder(layersFolder, {
+      label: "Contours",
+      selectedValue: ui.contoursPressure,
+      buttons: CONTOURS_PRESSURE_OPTIONS.map((opt) => ({
+        title: opt.label,
+        value: opt.value,
+        onClick: () => {
+          const v = opt.value as ContoursPressure;
+          useControls.getState().setContoursPressure(v);
+          ui.contoursPressure = v;
+          
+        },
+      })),
+    });
+
+    addSeparatorToFolder(layersFolder);
+    windButtonsApi = addButtonRowToFolder(layersFolder, {
+      label: "Wind Trails",
+      selectedValue: ui.windTrailsPressure,
+      buttons: WIND_TRAILS_PRESSURE_OPTIONS.map((opt) => ({
+        title: opt.label,
+        value: opt.value,
+        onClick: () => {
+          const v = opt.value as WindTrailsPressure;
+          useControls.getState().setWindTrailsPressure(v);
+          ui.windTrailsPressure = v;
+          
+        },
+      })),
     });
 
     const unsubMslParams = useControls.subscribe(
@@ -469,14 +479,15 @@ export default function TweakpaneControls() {
       (p) => {
         ui.mslContrast = p.contrast;
         ui.mslOpacity = p.opacity;
-        pane.refresh();
+        
       }
     );
     const unsubContoursPressure = useControls.subscribe(
       (s) => s.contoursPressure,
       (v) => {
         ui.contoursPressure = v as ContoursPressure;
-        pane.refresh();
+        contoursButtonsApi?.setSelectedValue(v as ContoursPressure);
+        
       }
     );
 
@@ -484,7 +495,8 @@ export default function TweakpaneControls() {
       (s) => s.windTrailsPressure,
       (v) => {
         ui.windTrailsPressure = v as WindTrailsPressure;
-        pane.refresh();
+        windButtonsApi?.setSelectedValue(v as WindTrailsPressure);
+        
       }
     );
 
@@ -497,7 +509,6 @@ export default function TweakpaneControls() {
       unsubEvapParams();
       unsubIVTVis();
       unsubIVTParams();
-      unsubPVVis();
       unsubPVParams();
       unsubMslParams();
       unsubContoursPressure();

@@ -43,6 +43,7 @@ function useEarth() {
 export function useEarthLayer(key: string) {
     const earth = useEarth();
     const { registerLayer, unregisterLayer, signalLayerReady } = earth;
+
     useEffect(() => {
         registerLayer(key);
         return () => unregisterLayer(key);
@@ -86,7 +87,9 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
     const roRef = useRef<ResizeObserver | null>(null);
     const [engineReady, setEngineReady] = useState(false);
     const registeredLayersRef = useRef(new Set<string>());
-    const readyLayersRef = useRef(new Set<string>());
+    const readyLayersRef = useRef(new Map<string, string>());
+    const latestTimestampRef = useRef(timestamp);
+    latestTimestampRef.current = timestamp;
 
     const [allLayersReady, setAllLayersReady] = useState(false);
 
@@ -119,19 +122,22 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
 
         const reg = registeredLayersRef.current;
         const ready = readyLayersRef.current;
+        const currentTs = latestTimestampRef.current;
 
         // if no layers are registered, treat as ready
         let ok = true;
         for (const k of reg) {
-            if (!ready.has(k)) { ok = false; break; }
+            if (ready.get(k) !== currentTs) {
+                ok = false;
+                break;
+            }
         }
         setAllLayersReady(ok);
     }, [engineReady]);
 
     useEffect(() => {
-        readyLayersRef.current.clear();
         recomputeAllReady();
-    }, [timestamp, engineReady]);
+    }, [timestamp, engineReady, recomputeAllReady]);
 
     const registerLayer = useCallback((key: string) => {
         registeredLayersRef.current.add(key);
@@ -145,11 +151,11 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
     }, [recomputeAllReady]);
 
     const signalLayerReady = useCallback((ts: string, key: string) => {
-        if (ts !== timestamp) return;
+        if (ts !== latestTimestampRef.current) return;
 
-        readyLayersRef.current.add(key);
+        readyLayersRef.current.set(key, ts);
         recomputeAllReady();
-    }, [timestamp, recomputeAllReady]);
+    }, [recomputeAllReady]);
 
     useEffect(() => {
         onAllReadyChange?.(allLayersReady, timestamp);

@@ -828,7 +828,6 @@ export default function WindTrailParticlesLayer({
     unregisterFramePass,
     zoom01,
   } = useEarthLayer(layerKey);
-  console.log('zoom level ', zoom01)
 
   const apiRef = useRef<WindLayerAPI | null>(null);
 

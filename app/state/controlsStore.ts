@@ -5,7 +5,6 @@ export type LayerToggles = {
   moisture: boolean;
   evaporation: boolean;
   ivt: boolean;
-  pv: boolean;
 };
 
 type EvapParams = {
@@ -24,14 +23,14 @@ type MoistureParams = {
 };
 
 type IVTParams = {
-  uIvtMin: number;   // NEW (0.0)
-  uIvtMax: number;   // NEW (0.8)
-  uScale: number;    // NEW
-  uGamma: number;    // NEW
+  uIvtMin: number;
+  uIvtMax: number;
+  uScale: number;
+  uGamma: number;
 };
 
 type PVParams = {
-  pressureLevel: number;
+  pressureLevel: PVPressure;
   uPvMin: number;
   uPvMax: number;
   uGamma: number;
@@ -63,6 +62,15 @@ export const WIND_TRAILS_PRESSURE_OPTIONS = [
 
 export type WindTrailsPressure = (typeof WIND_TRAILS_PRESSURE_OPTIONS)[number]["value"];
 
+export const PV_PRESSURE_OPTIONS = [
+  { value: "none", label: "None" },
+  { value: 250, label: "250 hPa" },
+  { value: 500, label: "500 hPa" },
+  { value: 925, label: "925 hPa" },
+] as const;
+
+export type PVPressure = (typeof PV_PRESSURE_OPTIONS)[number]["value"];
+
 type ControlsState = {
   layers: LayerToggles;
   evap: EvapParams;
@@ -89,7 +97,6 @@ export const useControls = create<ControlsState>()(
       moisture: true,
       evaporation: false,
       ivt: false,
-      pv: false,
     },
 
     mslContours: {
@@ -105,8 +112,6 @@ export const useControls = create<ControlsState>()(
       uGamma: 1.5,
       uAlphaScale: 0.75,
     },
-
-
     moisture: {
       uAnomMin: 0,
       uAnomMax: 100,
@@ -122,7 +127,7 @@ export const useControls = create<ControlsState>()(
     },
 
     pv: {
-      pressureLevel: 250,
+      pressureLevel: "none",
       uPvMin: -2e-6,
       uPvMax: 2.4e-5,
       uGamma: 0.9,
@@ -150,7 +155,4 @@ export const useControls = create<ControlsState>()(
     windTrailsPressure: 925,
     setWindTrailsPressure: (pressure) => set(() => ({ windTrailsPressure: pressure })),
   })),
-
-
-
 );
