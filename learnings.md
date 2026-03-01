@@ -1,0 +1,22 @@
+ridges and troughs
+- areas of lower and higher gph associated with warmer/cooler air
+
+trough is extension of lower gph from pole to equator
+ridge is extension of higher gph from equator to pole
+- same phenomena just different directions
+
+air follows gph contours
+- ridge and trough alter these patterns
+
+ridge and trough have different vorticity
+- core reason is earth has innate planetary vorticity
+    - dont fully understand this but imagine a person at north pole, as the earth rotates the circle their head traces is perfectly aligned with earth's axis of rotation. theyre achieving 100% parity with earth. as you get more equatorward the arrow from center of earth through your head has less and less of the vertical component of earth's axis so it imparts less and less rotation to you
+- meteo defines ccw in north hemisphere as positive vorticity and cw as negative vorticity. seems slightly arbitrary but basically aligning it with earth's vorticity
+- trough makes air bend ccw so it positive earth vorticity + ccw defined as positive vorticity = big positive number
+- ridge makes things go cw so positive earth vorticity + cw defined as negative vorticity = small positive number
+
+earth vorticity NOT coriolis force, 2 different things
+
+potential vorticity = standardized way of measuring voricity of air masses because like a figure skater twirling the narrow/taller an air mass is the faster it spins even if nothing else changes about it. 
+
+think of ridge and trough as waves in 3d fluid of atmosphere
