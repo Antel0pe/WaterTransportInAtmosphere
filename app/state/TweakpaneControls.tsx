@@ -5,9 +5,13 @@ import { Pane } from "tweakpane";
 import {
   CONTOURS_PRESSURE_OPTIONS,
   ContoursPressure,
+  DIVERGENCE_PRESSURE_OPTIONS,
+  DivergencePressure,
   PVPressure,
   PV_PRESSURE_OPTIONS,
   useControls,
+  VERTICAL_VELOCITY_PRESSURE_OPTIONS,
+  VerticalVelocityPressure,
   WIND_TRAILS_PRESSURE_OPTIONS,
   WindTrailsPressure,
 } from "../state/controlsStore";
@@ -56,6 +60,18 @@ export default function TweakpaneControls() {
       pvGamma: s0.pv.uGamma,
       pvAlpha: s0.pv.uAlpha,
 
+      divergencePressureLevel: s0.divergence.pressureLevel,
+      uDivMin: s0.divergence.uDivMin,
+      uDivMax: s0.divergence.uDivMax,
+      divergenceGamma: s0.divergence.uGamma,
+      divergenceAlpha: s0.divergence.uAlpha,
+
+      verticalVelocityPressureLevel: s0.verticalVelocity.pressureLevel,
+      uWMin: s0.verticalVelocity.uWMin,
+      uWMax: s0.verticalVelocity.uWMax,
+      verticalVelocityGamma: s0.verticalVelocity.uGamma,
+      verticalVelocityAlpha: s0.verticalVelocity.uAlpha,
+
       mslContrast: s0.mslContours.contrast,
       mslOpacity: s0.mslContours.opacity,
       contoursPressure: s0.contoursPressure as ContoursPressure,
@@ -70,11 +86,15 @@ export default function TweakpaneControls() {
       evap: { ...s0.evap },
       ivt: { ...s0.ivt },
       pv: { ...s0.pv },
+      divergence: { ...s0.divergence },
+      verticalVelocity: { ...s0.verticalVelocity },
       mslContours: { ...s0.mslContours },
       contoursPressure: s0.contoursPressure as ContoursPressure,
       windTrailsPressure: s0.windTrailsPressure as WindTrailsPressure,
     };
     let pvButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
+    let divergenceButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
+    let verticalVelocityButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
     let contoursButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
     let windButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
 
@@ -88,6 +108,9 @@ export default function TweakpaneControls() {
       st.setMoisture(defaults.moisture);
       st.setEvap(defaults.evap);
       st.setIVT(defaults.ivt);
+      st.setPV(defaults.pv);
+      st.setDivergence(defaults.divergence);
+      st.setVerticalVelocity(defaults.verticalVelocity);
       st.setMslContours(defaults.mslContours);
 
       // update tweakpane-bound object immediately
@@ -117,6 +140,18 @@ export default function TweakpaneControls() {
       ui.pvGamma = defaults.pv.uGamma;
       ui.pvAlpha = defaults.pv.uAlpha;
 
+      ui.divergencePressureLevel = defaults.divergence.pressureLevel;
+      ui.uDivMin = defaults.divergence.uDivMin;
+      ui.uDivMax = defaults.divergence.uDivMax;
+      ui.divergenceGamma = defaults.divergence.uGamma;
+      ui.divergenceAlpha = defaults.divergence.uAlpha;
+
+      ui.verticalVelocityPressureLevel = defaults.verticalVelocity.pressureLevel;
+      ui.uWMin = defaults.verticalVelocity.uWMin;
+      ui.uWMax = defaults.verticalVelocity.uWMax;
+      ui.verticalVelocityGamma = defaults.verticalVelocity.uGamma;
+      ui.verticalVelocityAlpha = defaults.verticalVelocity.uAlpha;
+
       ui.mslContrast = defaults.mslContours.contrast;
       ui.mslOpacity = defaults.mslContours.opacity;
       ui.contoursPressure = defaults.contoursPressure;
@@ -124,12 +159,13 @@ export default function TweakpaneControls() {
 
       ui.windTrailsPressure = defaults.windTrailsPressure;
       st.setWindTrailsPressure(defaults.windTrailsPressure);
-      st.setPV(defaults.pv);
       pvButtonsApi?.setSelectedValue(defaults.pv.pressureLevel);
+      divergenceButtonsApi?.setSelectedValue(defaults.divergence.pressureLevel);
+      verticalVelocityButtonsApi?.setSelectedValue(
+        defaults.verticalVelocity.pressureLevel
+      );
       contoursButtonsApi?.setSelectedValue(defaults.contoursPressure);
       windButtonsApi?.setSelectedValue(defaults.windTrailsPressure);
-
-      
     });
 
     // ---- Layers ----
@@ -335,6 +371,86 @@ export default function TweakpaneControls() {
       useControls.getState().setPV({ uAlpha: Number(e.value) });
     });
 
+    const divergenceFolder = pane.addFolder({ title: "Divergence Params" });
+    const bDivMin = divergenceFolder.addBinding(ui, "uDivMin", {
+      label: "uDivMin",
+      min: -0.002,
+      max: 0.002,
+      step: 1e-6,
+    });
+    const bDivMax = divergenceFolder.addBinding(ui, "uDivMax", {
+      label: "uDivMax",
+      min: -0.002,
+      max: 0.002,
+      step: 1e-6,
+    });
+    const bDivGamma = divergenceFolder.addBinding(ui, "divergenceGamma", {
+      label: "gamma",
+      min: 0.1,
+      max: 3.0,
+      step: 0.05,
+    });
+    const bDivAlpha = divergenceFolder.addBinding(ui, "divergenceAlpha", {
+      label: "alpha",
+      min: 0.0,
+      max: 1.0,
+      step: 0.01,
+    });
+
+    bDivMin.on("change", (e) => {
+      useControls.getState().setDivergence({ uDivMin: Number(e.value) });
+    });
+    bDivMax.on("change", (e) => {
+      useControls.getState().setDivergence({ uDivMax: Number(e.value) });
+    });
+    bDivGamma.on("change", (e) => {
+      useControls.getState().setDivergence({ uGamma: Number(e.value) });
+    });
+    bDivAlpha.on("change", (e) => {
+      useControls.getState().setDivergence({ uAlpha: Number(e.value) });
+    });
+
+    const verticalVelocityFolder = pane.addFolder({
+      title: "Vertical Velocity Params",
+    });
+    const bWMin = verticalVelocityFolder.addBinding(ui, "uWMin", {
+      label: "uWMin",
+      min: -30,
+      max: 30,
+      step: 0.01,
+    });
+    const bWMax = verticalVelocityFolder.addBinding(ui, "uWMax", {
+      label: "uWMax",
+      min: -30,
+      max: 30,
+      step: 0.01,
+    });
+    const bWGamma = verticalVelocityFolder.addBinding(ui, "verticalVelocityGamma", {
+      label: "gamma",
+      min: 0.1,
+      max: 3.0,
+      step: 0.05,
+    });
+    const bWAlpha = verticalVelocityFolder.addBinding(ui, "verticalVelocityAlpha", {
+      label: "alpha",
+      min: 0.0,
+      max: 1.0,
+      step: 0.01,
+    });
+
+    bWMin.on("change", (e) => {
+      useControls.getState().setVerticalVelocity({ uWMin: Number(e.value) });
+    });
+    bWMax.on("change", (e) => {
+      useControls.getState().setVerticalVelocity({ uWMax: Number(e.value) });
+    });
+    bWGamma.on("change", (e) => {
+      useControls.getState().setVerticalVelocity({ uGamma: Number(e.value) });
+    });
+    bWAlpha.on("change", (e) => {
+      useControls.getState().setVerticalVelocity({ uAlpha: Number(e.value) });
+    });
+
 
     // ---- subscriptions: keep tweakpane in sync if store changes elsewhere ----
     const unsubMoistureVis = useControls.subscribe(
@@ -404,7 +520,30 @@ export default function TweakpaneControls() {
         ui.pvGamma = p.uGamma;
         ui.pvAlpha = p.uAlpha;
         pvButtonsApi?.setSelectedValue(p.pressureLevel);
-        
+      }
+    );
+
+    const unsubDivergenceParams = useControls.subscribe(
+      (s) => s.divergence,
+      (p) => {
+        ui.divergencePressureLevel = p.pressureLevel;
+        ui.uDivMin = p.uDivMin;
+        ui.uDivMax = p.uDivMax;
+        ui.divergenceGamma = p.uGamma;
+        ui.divergenceAlpha = p.uAlpha;
+        divergenceButtonsApi?.setSelectedValue(p.pressureLevel);
+      }
+    );
+
+    const unsubVerticalVelocityParams = useControls.subscribe(
+      (s) => s.verticalVelocity,
+      (p) => {
+        ui.verticalVelocityPressureLevel = p.pressureLevel;
+        ui.uWMin = p.uWMin;
+        ui.uWMax = p.uWMax;
+        ui.verticalVelocityGamma = p.uGamma;
+        ui.verticalVelocityAlpha = p.uAlpha;
+        verticalVelocityButtonsApi?.setSelectedValue(p.pressureLevel);
       }
     );
 
@@ -430,11 +569,12 @@ export default function TweakpaneControls() {
     pvButtonsApi = addButtonRowToFolder(layersFolder, {
       label: "PV",
       selectedValue: ui.pvPressureLevel,
+      toggleOffValue: "none",
       buttons: PV_PRESSURE_OPTIONS.map((opt) => ({
         title: opt.label,
         value: opt.value,
-        onClick: () => {
-          const v = opt.value as PVPressure;
+        onClick: (nextValue) => {
+          const v = nextValue as PVPressure;
           useControls.getState().setPV({ pressureLevel: v });
           ui.pvPressureLevel = v;
           
@@ -443,14 +583,50 @@ export default function TweakpaneControls() {
     });
 
     addSeparatorToFolder(layersFolder);
+    divergenceButtonsApi = addButtonRowToFolder(layersFolder, {
+      label: "Divergence",
+      subtextLines: ["Yellow = divergence", "Green = convergence"],
+      selectedValue: ui.divergencePressureLevel,
+      toggleOffValue: "none",
+      buttons: DIVERGENCE_PRESSURE_OPTIONS.map((opt) => ({
+        title: opt.label,
+        value: opt.value,
+        onClick: (nextValue) => {
+          const v = nextValue as DivergencePressure;
+          useControls.getState().setDivergence({ pressureLevel: v });
+          ui.divergencePressureLevel = v;
+        },
+      })),
+    });
+
+    addSeparatorToFolder(layersFolder);
+    verticalVelocityButtonsApi = addButtonRowToFolder(layersFolder, {
+      label: "Vertical Vel",
+      subtextLines: ["Red = rising", "Blue = sinking"],
+      selectedValue: ui.verticalVelocityPressureLevel,
+      toggleOffValue: "none",
+      buttons: VERTICAL_VELOCITY_PRESSURE_OPTIONS.map((opt) => ({
+        title: opt.label,
+        value: opt.value,
+        onClick: (nextValue) => {
+          const v = nextValue as VerticalVelocityPressure;
+          useControls.getState().setVerticalVelocity({ pressureLevel: v });
+          ui.verticalVelocityPressureLevel = v;
+        },
+      })),
+    });
+
+    addSeparatorToFolder(layersFolder);
     contoursButtonsApi = addButtonRowToFolder(layersFolder, {
       label: "Contours",
+      subtextLines: ["Red = higher gph", "Blue = lower gph"],
       selectedValue: ui.contoursPressure,
+      toggleOffValue: "none",
       buttons: CONTOURS_PRESSURE_OPTIONS.map((opt) => ({
         title: opt.label,
         value: opt.value,
-        onClick: () => {
-          const v = opt.value as ContoursPressure;
+        onClick: (nextValue) => {
+          const v = nextValue as ContoursPressure;
           useControls.getState().setContoursPressure(v);
           ui.contoursPressure = v;
           
@@ -462,11 +638,12 @@ export default function TweakpaneControls() {
     windButtonsApi = addButtonRowToFolder(layersFolder, {
       label: "Wind Trails",
       selectedValue: ui.windTrailsPressure,
+      toggleOffValue: "none",
       buttons: WIND_TRAILS_PRESSURE_OPTIONS.map((opt) => ({
         title: opt.label,
         value: opt.value,
-        onClick: () => {
-          const v = opt.value as WindTrailsPressure;
+        onClick: (nextValue) => {
+          const v = nextValue as WindTrailsPressure;
           useControls.getState().setWindTrailsPressure(v);
           ui.windTrailsPressure = v;
           
@@ -510,6 +687,8 @@ export default function TweakpaneControls() {
       unsubIVTVis();
       unsubIVTParams();
       unsubPVParams();
+      unsubDivergenceParams();
+      unsubVerticalVelocityParams();
       unsubMslParams();
       unsubContoursPressure();
       unsubWindPressure();

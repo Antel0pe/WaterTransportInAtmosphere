@@ -37,6 +37,28 @@ type PVParams = {
   uAlpha: number;
 };
 
+type DivergenceParams = {
+  pressureLevel: DivergencePressure;
+  uDivMin: number;
+  uDivMax: number;
+  uGamma: number;
+  uAlpha: number;
+
+  uZeroEps: number;   // normalized width around 0 that fades out (0..1)
+  uAsinhK: number;    // HDR-ish compression (>0). set 0 to disable
+};
+
+type VerticalVelocityParams = {
+  pressureLevel: VerticalVelocityPressure;
+  uWMin: number;
+  uWMax: number;
+  uGamma: number;
+  uAlpha: number;
+
+  uZeroEps: number;
+  uAsinhK: number;
+};
+
 type MslContoursParams = {
   contrast: number;
   opacity: number;
@@ -60,7 +82,8 @@ export const WIND_TRAILS_PRESSURE_OPTIONS = [
   { value: 925, label: "925 hPa" },
 ] as const;
 
-export type WindTrailsPressure = (typeof WIND_TRAILS_PRESSURE_OPTIONS)[number]["value"];
+export type WindTrailsPressure =
+  (typeof WIND_TRAILS_PRESSURE_OPTIONS)[number]["value"];
 
 export const PV_PRESSURE_OPTIONS = [
   { value: "none", label: "None" },
@@ -71,12 +94,34 @@ export const PV_PRESSURE_OPTIONS = [
 
 export type PVPressure = (typeof PV_PRESSURE_OPTIONS)[number]["value"];
 
+export const DIVERGENCE_PRESSURE_OPTIONS = [
+  { value: "none", label: "None" },
+  { value: 250, label: "250 hPa" },
+  { value: 500, label: "500 hPa" },
+  { value: 925, label: "925 hPa" },
+] as const;
+
+export type DivergencePressure =
+  (typeof DIVERGENCE_PRESSURE_OPTIONS)[number]["value"];
+
+export const VERTICAL_VELOCITY_PRESSURE_OPTIONS = [
+  { value: "none", label: "None" },
+  { value: 250, label: "250 hPa" },
+  { value: 500, label: "500 hPa" },
+  { value: 925, label: "925 hPa" },
+] as const;
+
+export type VerticalVelocityPressure =
+  (typeof VERTICAL_VELOCITY_PRESSURE_OPTIONS)[number]["value"];
+
 type ControlsState = {
   layers: LayerToggles;
   evap: EvapParams;
   moisture: MoistureParams;
   ivt: IVTParams;
   pv: PVParams;
+  divergence: DivergenceParams;
+  verticalVelocity: VerticalVelocityParams;
   mslContours: MslContoursParams;
   contoursPressure: ContoursPressure;
   windTrailsPressure: WindTrailsPressure;
@@ -86,6 +131,8 @@ type ControlsState = {
   setMoisture: (patch: Partial<MoistureParams>) => void;
   setIVT: (patch: Partial<IVTParams>) => void;
   setPV: (patch: Partial<PVParams>) => void;
+  setDivergence: (patch: Partial<DivergenceParams>) => void;
+  setVerticalVelocity: (patch: Partial<VerticalVelocityParams>) => void;
   setMslContours: (patch: Partial<MslContoursParams>) => void;
   setContoursPressure: (pressure: ContoursPressure) => void;
   setWindTrailsPressure: (pressure: WindTrailsPressure) => void;
@@ -104,6 +151,7 @@ export const useControls = create<ControlsState>()(
       opacity: 0.95,
     },
     contoursPressure: "msl",
+    windTrailsPressure: 925,
 
     evap: {
       uEvapMin: -5e-4,
@@ -134,6 +182,26 @@ export const useControls = create<ControlsState>()(
       uAlpha: 0.9,
     },
 
+    divergence: {
+      pressureLevel: "none",
+      uDivMin: -7.0e-4,
+      uDivMax: +7.0e-4,
+      uGamma: 0.5,
+      uAlpha: 0.95,
+      uZeroEps: 0.08,
+      uAsinhK: 3,
+    },
+
+    verticalVelocity: {
+      pressureLevel: "none",
+      uWMin: -8.0,
+      uWMax: +8.0,
+      uGamma: 0.5,
+      uAlpha: 0.95,
+      uZeroEps: 0.06,
+      uAsinhK: 3,
+    },
+
     setLayer: (k, v) =>
       set((s) => ({ layers: { ...s.layers, [k]: v } })),
 
@@ -149,10 +217,21 @@ export const useControls = create<ControlsState>()(
     setPV: (patch) =>
       set((s) => ({ pv: { ...s.pv, ...patch } })),
 
+    setDivergence: (patch) =>
+      set((s) => ({ divergence: { ...s.divergence, ...patch } })),
+
+    setVerticalVelocity: (patch) =>
+      set((s) => ({
+        verticalVelocity: { ...s.verticalVelocity, ...patch },
+      })),
+
     setMslContours: (patch) =>
       set((s) => ({ mslContours: { ...s.mslContours, ...patch } })),
-    setContoursPressure: (pressure) => set(() => ({ contoursPressure: pressure })),
-    windTrailsPressure: 925,
-    setWindTrailsPressure: (pressure) => set(() => ({ windTrailsPressure: pressure })),
+
+    setContoursPressure: (pressure) =>
+      set(() => ({ contoursPressure: pressure })),
+
+    setWindTrailsPressure: (pressure) =>
+      set(() => ({ windTrailsPressure: pressure })),
   })),
 );

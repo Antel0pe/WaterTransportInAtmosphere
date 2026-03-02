@@ -123,7 +123,7 @@ export default function MslContoursLayer() {
     ): THREE.Color {
       let t = (levelHpa - minHpa) / (maxHpa - minHpa);
       t = THREE.MathUtils.clamp(t, 0, 1);
-      t = applyContrast(t, contrast);
+      // t = applyContrast(t, contrast);
 
       // simple + high-contrast: red (low) -> green (high), pushed apart
       const red = new THREE.Color(1.0, 0.0, 0.35);   // slightly magenta-red (pops on ocean)

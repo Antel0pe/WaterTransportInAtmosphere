@@ -26,12 +26,25 @@ export function addButtonRowToFolder(
   folder: FolderApi,
   opts: {
     label: string;
-    buttons: Array<{ title: string; value: ButtonValue; onClick: () => void }>;
+    subtextLines?: string[];
+    buttons: Array<{
+      title: string;
+      value: ButtonValue;
+      onClick: (value: ButtonValue) => void;
+    }>;
     selectedValue?: ButtonValue;
+    toggleOffValue?: ButtonValue;
     gapPx?: number;
   }
 ) {
-  const { label, buttons, selectedValue, gapPx = 6 } = opts;
+  const {
+    label,
+    subtextLines,
+    buttons,
+    selectedValue,
+    toggleOffValue,
+    gapPx = 6,
+  } = opts;
 
   const folderRoot = folder.element as HTMLElement;
   const content = folderRoot.querySelector(".tp-fldv_c") as HTMLElement | null;
@@ -43,7 +56,30 @@ export function addButtonRowToFolder(
 
   const left = document.createElement("div");
   left.className = "tp-lblv_l";
-  left.textContent = label;
+  if (subtextLines?.length) {
+    left.style.whiteSpace = "normal";
+    left.style.display = "flex";
+    left.style.flexDirection = "column";
+    left.style.alignItems = "flex-start";
+
+    const labelEl = document.createElement("div");
+    labelEl.textContent = label;
+    left.appendChild(labelEl);
+
+    const subtextEl = document.createElement("div");
+    subtextEl.style.fontSize = "11px";
+    subtextEl.style.lineHeight = "1.25";
+    subtextEl.style.opacity = "0.72";
+    subtextEl.style.marginTop = "3px";
+    for (const line of subtextLines) {
+      const lineEl = document.createElement("div");
+      lineEl.textContent = line;
+      subtextEl.appendChild(lineEl);
+    }
+    left.appendChild(subtextEl);
+  } else {
+    left.textContent = label;
+  }
 
   const right = document.createElement("div");
   right.className = "tp-lblv_v";
@@ -57,8 +93,10 @@ export function addButtonRowToFolder(
   btnWrap.style.flexWrap = "wrap";
 
   const buttonByValue = new Map<ButtonValue, HTMLButtonElement>();
+  let currentSelectedValue: ButtonValue | undefined = selectedValue;
 
-  const setSelectedValue = (value: ButtonValue) => {
+  const setSelectedValue = (value: ButtonValue | undefined) => {
+    currentSelectedValue = value;
     for (const [buttonValue, el] of buttonByValue.entries()) {
       setButtonSelectedStyle(el, buttonValue === value);
     }
@@ -71,8 +109,13 @@ export function addButtonRowToFolder(
     el.style.width = "auto";
     el.style.padding = "0 8px";
     el.addEventListener("click", () => {
-      setSelectedValue(b.value);
-      b.onClick();
+      const isAlreadySelected = currentSelectedValue === b.value;
+      const nextValue =
+        toggleOffValue !== undefined && isAlreadySelected
+          ? toggleOffValue
+          : b.value;
+      setSelectedValue(nextValue);
+      b.onClick(nextValue);
     });
 
     const t = document.createElement("div");

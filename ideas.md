@@ -1,0 +1,2 @@
+# ideas to implement
+- create 2 mats/refs for each layer and then when playing load the other one fully initialize it and then in 1 go for new timestamp make new one visible and old one invisible. also could preload the png for faster playback

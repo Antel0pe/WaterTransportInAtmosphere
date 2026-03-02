@@ -46,3 +46,11 @@ export function windUvRgApiUrl(datehour: string, pressureLevel: number) {
 export function potentialVorticityApiUrl(datehour: string, pressureLevel: number) {
   return `/api/potential_vorticity/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
 }
+
+export function divergenceApiUrl(datehour: string, pressureLevel: number) {
+  return `/api/divergence/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
+}
+
+export function verticalVelocityApiUrl(datehour: string, pressureLevel: number) {
+  return `/api/vertical_velocity/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
+}

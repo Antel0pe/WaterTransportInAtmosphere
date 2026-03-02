@@ -30,6 +30,16 @@ const PotentialVorticityLayer = dynamic(() => import("./layers/PotentialVorticit
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
 
+const DivergenceLayer = dynamic(() => import("./layers/DivergenceLayer"), {
+  ssr: false,
+  loading: () => <div style={{ width: "100%", height: "100%" }} />,
+});
+
+const VerticalVelocityLayer = dynamic(() => import("./layers/VerticalVelocityLayer"), {
+  ssr: false,
+  loading: () => <div style={{ width: "100%", height: "100%" }} />,
+});
+
 const MslContoursLayer = dynamic(() => import("./layers/MslContoursLayer"), {
   ssr: false,
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
@@ -89,6 +99,8 @@ export default function HomeClient() {
             <EvaporationLayer />
             <IVTLayer />
             <PotentialVorticityLayer />
+            <DivergenceLayer />
+            <VerticalVelocityLayer />
             <MslContoursLayer />
             {/* <WindUVArrowsLayer /> */}
             <WindTrailParticlesLayer heightTex={null} />

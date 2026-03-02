@@ -392,6 +392,10 @@ function getTextureWH(texture: THREE.Texture): { w: number; h: number } {
   return { w, h };
 }
 
+function getZoomStep(zoomLevel: number): number {
+  return Math.round(THREE.MathUtils.clamp(zoomLevel * 15, 3, 20));
+}
+
 function clearRT(
   renderer: THREE.WebGLRenderer,
   rt: THREE.WebGLRenderTarget,
@@ -511,10 +515,7 @@ function buildWindLayer(args: {
 
   // const UV_POINTS_STEP = 10;
   // const UV_POINTS_STEP = zoomLevel * 15;
-  const UV_POINTS_STEP = Math.round(
-    THREE.MathUtils.clamp(zoomLevel * 15, 3, 20)
-  );
-  console.log('uv points step: ', UV_POINTS_STEP)
+  const UV_POINTS_STEP = getZoomStep(zoomLevel);
   const outW = Math.ceil(texW / UV_POINTS_STEP);
   const outH = Math.ceil(texH / UV_POINTS_STEP);
 
@@ -870,7 +871,6 @@ export default function WindTrailParticlesLayer({
         }
 
         const existing = apiRef.current;
-
         // 1) If first time: build
         if (!existing) {
           if (windTexRef.current) windTexRef.current.dispose();
@@ -933,7 +933,8 @@ export default function WindTrailParticlesLayer({
           return;
         }
 
-        if (existing.zoomStep !== zoom01) {
+        const desiredZoomStep = getZoomStep(zoom01);
+        if (existing.zoomStep !== desiredZoomStep) {
           // IMPORTANT: keep the new texture or reuse the same one;
           // we already have `texture` loaded and configured.
           disposeWindLayer({
@@ -969,18 +970,17 @@ export default function WindTrailParticlesLayer({
           signalReady(timestamp);
           return;
         }
-
         // 3) Normal case: swap wind texture + reset RTs
         if (windTexRef.current) windTexRef.current.dispose();
         windTexRef.current = texture;
         setWindTex?.(texture);
 
         existing.simMat.uniforms.uWindTexture.value = texture;
-
-        clearRTFloat(renderer, existing.readRT);
-        clearRTFloat(renderer, existing.writeRT);
-        clearRTByte(renderer, existing.trailReadRT);
-        clearRTByte(renderer, existing.trailWriteRT);
+        // prevent particles/trails from clearing out on timestamp change
+        // clearRTFloat(renderer, existing.readRT);
+        // clearRTFloat(renderer, existing.writeRT);
+        // clearRTByte(renderer, existing.trailReadRT);
+        // clearRTByte(renderer, existing.trailWriteRT);
 
         existing.ptsMat.uniforms.uCurrentPosition.value = existing.readRT.texture;
         existing.trailStampMat.uniforms.uCurrentPosition.value = existing.readRT.texture;
