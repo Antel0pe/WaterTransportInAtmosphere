@@ -20,3 +20,6 @@ earth vorticity NOT coriolis force, 2 different things
 potential vorticity = standardized way of measuring voricity of air masses because like a figure skater twirling the narrow/taller an air mass is the faster it spins even if nothing else changes about it. 
 
 think of ridge and trough as waves in 3d fluid of atmosphere
+
+so many instances of time where i learned some sort of meteo phenomena like hadley-ferrel cells/divergence aloft means rising air in the column and i look at the data and it's just not there. it's vaguely there but it's not a rule but apparently like a high level pattern that is generally but not always followed?
+

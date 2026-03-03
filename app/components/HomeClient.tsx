@@ -40,12 +40,22 @@ const VerticalVelocityLayer = dynamic(() => import("./layers/VerticalVelocityLay
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
 
+const TemperatureLayer = dynamic(() => import("./layers/TemperatureLayer"), {
+  ssr: false,
+  loading: () => <div style={{ width: "100%", height: "100%" }} />,
+});
+
 const MslContoursLayer = dynamic(() => import("./layers/MslContoursLayer"), {
   ssr: false,
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
 
 const WindUVArrowsLayer = dynamic(() => import("./layers/WindUVArrowsLayer"), {
+  ssr: false,
+  loading: () => <div style={{ width: "100%", height: "100%" }} />,
+});
+
+const TestWindLayer = dynamic(() => import("./layers/TestWindLayer"), {
   ssr: false,
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
@@ -101,6 +111,7 @@ export default function HomeClient() {
             <PotentialVorticityLayer />
             <DivergenceLayer />
             <VerticalVelocityLayer />
+            <TemperatureLayer />
             <MslContoursLayer />
             {/* <WindUVArrowsLayer /> */}
             <WindTrailParticlesLayer heightTex={null} />

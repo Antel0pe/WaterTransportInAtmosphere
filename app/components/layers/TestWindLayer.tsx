@@ -83,8 +83,9 @@ export default function TestWindLayer() {
           float speed = length(wind);
           float b = clamp(speed / uUvMax, 0.0, 1.0);
 
-        //   gl_FragColor = vec4(rg01.r, rg01.g, b, 1.0);
-        gl_FragColor = vec4(texel);
+          gl_FragColor = vec4(rg01.r, rg01.g, b, 1.0);
+          gl_FragColor = vec4(0.0, 0.0, b, 1.0);
+        // gl_FragColor = vec4(texel);
         }
       `,
     });
@@ -117,7 +118,7 @@ export default function TestWindLayer() {
     let cancelled = false;
 
     const mat = mesh.material as THREE.ShaderMaterial;
-    const url = windUvRgApiUrl(timestamp, 925);
+    const url = windUvRgApiUrl(timestamp, 250);
 
     new THREE.TextureLoader().load(
       url,

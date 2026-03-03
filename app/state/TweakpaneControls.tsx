@@ -9,6 +9,8 @@ import {
   DivergencePressure,
   PVPressure,
   PV_PRESSURE_OPTIONS,
+  TEMPERATURE_PRESSURE_OPTIONS,
+  TemperaturePressure,
   useControls,
   VERTICAL_VELOCITY_PRESSURE_OPTIONS,
   VerticalVelocityPressure,
@@ -72,6 +74,13 @@ export default function TweakpaneControls() {
       verticalVelocityGamma: s0.verticalVelocity.uGamma,
       verticalVelocityAlpha: s0.verticalVelocity.uAlpha,
 
+      temperaturePressureLevel: s0.temperature.pressureLevel,
+      uTempMin: s0.temperature.uTempMin,
+      uTempMax: s0.temperature.uTempMax,
+      temperatureGamma: s0.temperature.uGamma,
+      temperatureAlpha: s0.temperature.uAlpha,
+      temperatureContrast: s0.temperature.uContrast,
+
       mslContrast: s0.mslContours.contrast,
       mslOpacity: s0.mslContours.opacity,
       contoursPressure: s0.contoursPressure as ContoursPressure,
@@ -88,6 +97,7 @@ export default function TweakpaneControls() {
       pv: { ...s0.pv },
       divergence: { ...s0.divergence },
       verticalVelocity: { ...s0.verticalVelocity },
+      temperature: { ...s0.temperature },
       mslContours: { ...s0.mslContours },
       contoursPressure: s0.contoursPressure as ContoursPressure,
       windTrailsPressure: s0.windTrailsPressure as WindTrailsPressure,
@@ -95,6 +105,7 @@ export default function TweakpaneControls() {
     let pvButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
     let divergenceButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
     let verticalVelocityButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
+    let temperatureButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
     let contoursButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
     let windButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
 
@@ -111,6 +122,7 @@ export default function TweakpaneControls() {
       st.setPV(defaults.pv);
       st.setDivergence(defaults.divergence);
       st.setVerticalVelocity(defaults.verticalVelocity);
+      st.setTemperature(defaults.temperature);
       st.setMslContours(defaults.mslContours);
 
       // update tweakpane-bound object immediately
@@ -152,6 +164,13 @@ export default function TweakpaneControls() {
       ui.verticalVelocityGamma = defaults.verticalVelocity.uGamma;
       ui.verticalVelocityAlpha = defaults.verticalVelocity.uAlpha;
 
+      ui.temperaturePressureLevel = defaults.temperature.pressureLevel;
+      ui.uTempMin = defaults.temperature.uTempMin;
+      ui.uTempMax = defaults.temperature.uTempMax;
+      ui.temperatureGamma = defaults.temperature.uGamma;
+      ui.temperatureAlpha = defaults.temperature.uAlpha;
+      ui.temperatureContrast = defaults.temperature.uContrast;
+
       ui.mslContrast = defaults.mslContours.contrast;
       ui.mslOpacity = defaults.mslContours.opacity;
       ui.contoursPressure = defaults.contoursPressure;
@@ -164,6 +183,7 @@ export default function TweakpaneControls() {
       verticalVelocityButtonsApi?.setSelectedValue(
         defaults.verticalVelocity.pressureLevel
       );
+      temperatureButtonsApi?.setSelectedValue(defaults.temperature.pressureLevel);
       contoursButtonsApi?.setSelectedValue(defaults.contoursPressure);
       windButtonsApi?.setSelectedValue(defaults.windTrailsPressure);
     });
@@ -451,6 +471,56 @@ export default function TweakpaneControls() {
       useControls.getState().setVerticalVelocity({ uAlpha: Number(e.value) });
     });
 
+    const temperatureFolder = pane.addFolder({
+      title: "Temperature Params",
+    });
+    const bTempMin = temperatureFolder.addBinding(ui, "uTempMin", {
+      label: "uTempMin",
+      min: 150,
+      max: 330,
+      step: 1,
+    });
+    const bTempMax = temperatureFolder.addBinding(ui, "uTempMax", {
+      label: "uTempMax",
+      min: 150,
+      max: 340,
+      step: 1,
+    });
+    const bTempGamma = temperatureFolder.addBinding(ui, "temperatureGamma", {
+      label: "gamma",
+      min: 0.1,
+      max: 3.0,
+      step: 0.05,
+    });
+    const bTempAlpha = temperatureFolder.addBinding(ui, "temperatureAlpha", {
+      label: "alpha",
+      min: 0.0,
+      max: 1.0,
+      step: 0.01,
+    });
+    const bTempContrast = temperatureFolder.addBinding(ui, "temperatureContrast", {
+      label: "contrast",
+      min: 0.5,
+      max: 4.0,
+      step: 0.05,
+    });
+
+    bTempMin.on("change", (e) => {
+      useControls.getState().setTemperature({ uTempMin: Number(e.value) });
+    });
+    bTempMax.on("change", (e) => {
+      useControls.getState().setTemperature({ uTempMax: Number(e.value) });
+    });
+    bTempGamma.on("change", (e) => {
+      useControls.getState().setTemperature({ uGamma: Number(e.value) });
+    });
+    bTempAlpha.on("change", (e) => {
+      useControls.getState().setTemperature({ uAlpha: Number(e.value) });
+    });
+    bTempContrast.on("change", (e) => {
+      useControls.getState().setTemperature({ uContrast: Number(e.value) });
+    });
+
 
     // ---- subscriptions: keep tweakpane in sync if store changes elsewhere ----
     const unsubMoistureVis = useControls.subscribe(
@@ -547,6 +617,19 @@ export default function TweakpaneControls() {
       }
     );
 
+    const unsubTemperatureParams = useControls.subscribe(
+      (s) => s.temperature,
+      (p) => {
+        ui.temperaturePressureLevel = p.pressureLevel;
+        ui.uTempMin = p.uTempMin;
+        ui.uTempMax = p.uTempMax;
+        ui.temperatureGamma = p.uGamma;
+        ui.temperatureAlpha = p.uAlpha;
+        ui.temperatureContrast = p.uContrast;
+        temperatureButtonsApi?.setSelectedValue(p.pressureLevel);
+      }
+    );
+
     const mslFolder = pane.addFolder({ title: "Contours Params" });
 
     const bMslContrast = mslFolder.addBinding(ui, "mslContrast", {
@@ -612,6 +695,23 @@ export default function TweakpaneControls() {
           const v = nextValue as VerticalVelocityPressure;
           useControls.getState().setVerticalVelocity({ pressureLevel: v });
           ui.verticalVelocityPressureLevel = v;
+        },
+      })),
+    });
+
+    addSeparatorToFolder(layersFolder);
+    temperatureButtonsApi = addButtonRowToFolder(layersFolder, {
+      label: "Temperature",
+      subtextLines: ["Red = warm", "Blue = cool"],
+      selectedValue: ui.temperaturePressureLevel,
+      toggleOffValue: "none",
+      buttons: TEMPERATURE_PRESSURE_OPTIONS.map((opt) => ({
+        title: opt.label,
+        value: opt.value,
+        onClick: (nextValue) => {
+          const v = nextValue as TemperaturePressure;
+          useControls.getState().setTemperature({ pressureLevel: v });
+          ui.temperaturePressureLevel = v;
         },
       })),
     });
@@ -689,6 +789,7 @@ export default function TweakpaneControls() {
       unsubPVParams();
       unsubDivergenceParams();
       unsubVerticalVelocityParams();
+      unsubTemperatureParams();
       unsubMslParams();
       unsubContoursPressure();
       unsubWindPressure();

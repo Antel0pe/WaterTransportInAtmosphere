@@ -9,6 +9,7 @@ data/
 /public/potential-vorticity-rg/*
 /public/divergence-rg/*
 /public/vertical-velocity-rg/*
+/public/temperature-rg/*
 /public/gph_contours/*
 # dependencies
 /node_modules

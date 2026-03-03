@@ -54,3 +54,7 @@ export function divergenceApiUrl(datehour: string, pressureLevel: number) {
 export function verticalVelocityApiUrl(datehour: string, pressureLevel: number) {
   return `/api/vertical_velocity/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
 }
+
+export function temperatureApiUrl(datehour: string, pressureLevel: number) {
+  return `/api/temperature/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
+}
