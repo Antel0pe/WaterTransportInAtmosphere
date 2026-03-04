@@ -23,3 +23,4 @@ think of ridge and trough as waves in 3d fluid of atmosphere
 
 so many instances of time where i learned some sort of meteo phenomena like hadley-ferrel cells/divergence aloft means rising air in the column and i look at the data and it's just not there. it's vaguely there but it's not a rule but apparently like a high level pattern that is generally but not always followed?
 
+spent a lot of time trying to figure out how the 250 wind affected/"created" the 925 wind but upon examination it looks like the 925 lower gph zone was advected from japan and happened to line up with the 250 trough. so they dont necessarily have to be caused. but still raises a question of why 250 looked like it had considerable influence on path earlier. 
