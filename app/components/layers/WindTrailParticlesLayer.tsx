@@ -831,6 +831,7 @@ export default function WindTrailParticlesLayer({
   } = useEarthLayer(layerKey);
 
   const apiRef = useRef<WindLayerAPI | null>(null);
+  const reqIdRef = useRef(0);
 
   // keep these so we can dispose easily
   const windTexRef = useRef<THREE.Texture | null>(null);
@@ -851,13 +852,15 @@ export default function WindTrailParticlesLayer({
     }
 
     let disposed = false;
+    const myReqId = ++reqIdRef.current;
+    const isCancelled = () => disposed || myReqId !== reqIdRef.current;
     const url = windUvRgApiUrl(timestamp, windTrailsPressure);
 
     const loader = new THREE.TextureLoader();
     loader.load(
       url,
       (texture) => {
-        if (disposed) {
+        if (isCancelled()) {
           texture.dispose();
           return;
         }
@@ -992,6 +995,7 @@ export default function WindTrailParticlesLayer({
       },
       undefined,
       (err) => {
+        if (isCancelled()) return;
         console.error("Failed to load wind uv png", err);
         signalReady(timestamp);
       }

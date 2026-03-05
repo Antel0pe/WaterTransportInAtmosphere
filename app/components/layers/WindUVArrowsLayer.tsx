@@ -66,6 +66,7 @@ export default function Wind925ArrowsLayer() {
     useEarthLayer("wind_925_arrows");
 
   const groupRef = useRef<THREE.Group | null>(null);
+  const reqIdRef = useRef(0);
 
   const geomRef = useRef<THREE.BufferGeometry | null>(null);
   const matRef = useRef<THREE.MeshBasicMaterial | null>(null);
@@ -124,6 +125,8 @@ export default function Wind925ArrowsLayer() {
     if (!g || !globe) return;
 
     let cancelled = false;
+    const myReqId = ++reqIdRef.current;
+    const isCancelled = () => cancelled || myReqId !== reqIdRef.current;
 
     function clearGroup(group: THREE.Group) {
       const kids = [...group.children];
@@ -191,7 +194,7 @@ export default function Wind925ArrowsLayer() {
         clearGroup(g);
 
         const img = await loadImageData(windUvRgApiUrl(timestamp, 925));
-        if (cancelled) return;
+        if (isCancelled()) return;
 
         const { width: W, height: H, data } = img;
 
@@ -275,6 +278,7 @@ export default function Wind925ArrowsLayer() {
 
         signalReady(timestamp);
       } catch (err) {
+        if (isCancelled()) return;
         console.error("Failed to load/draw wind 925 arrows", err);
         signalReady(timestamp);
       }

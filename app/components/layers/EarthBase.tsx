@@ -86,7 +86,7 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
     const sunRef = useRef<THREE.DirectionalLight | null>(null);
     const roRef = useRef<ResizeObserver | null>(null);
     const [engineReady, setEngineReady] = useState(false);
-    const registeredLayersRef = useRef(new Set<string>());
+    const registeredLayersRef = useRef(new Map<string, number>());
     const readyLayersRef = useRef(new Map<string, string>());
     const latestTimestampRef = useRef(timestamp);
     latestTimestampRef.current = timestamp;
@@ -126,7 +126,8 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
 
         // if no layers are registered, treat as ready
         let ok = true;
-        for (const k of reg) {
+        for (const [k, count] of reg.entries()) {
+            if (count <= 0) continue;
             if (ready.get(k) !== currentTs) {
                 ok = false;
                 break;
@@ -140,13 +141,19 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
     }, [timestamp, engineReady, recomputeAllReady]);
 
     const registerLayer = useCallback((key: string) => {
-        registeredLayersRef.current.add(key);
+        const prev = registeredLayersRef.current.get(key) ?? 0;
+        registeredLayersRef.current.set(key, prev + 1);
         recomputeAllReady();
     }, [recomputeAllReady]);
 
     const unregisterLayer = useCallback((key: string) => {
-        registeredLayersRef.current.delete(key);
-        readyLayersRef.current.delete(key);
+        const prev = registeredLayersRef.current.get(key) ?? 0;
+        if (prev <= 1) {
+            registeredLayersRef.current.delete(key);
+            readyLayersRef.current.delete(key);
+        } else {
+            registeredLayersRef.current.set(key, prev - 1);
+        }
         recomputeAllReady();
     }, [recomputeAllReady]);
 

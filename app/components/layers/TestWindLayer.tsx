@@ -3,18 +3,49 @@ import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { useEarthLayer } from "./EarthBase";
 import { windUvRgApiUrl } from "../utils/ApiResponses";
+import { configureDataTexture } from "./shaderUtils";
+
+const UV_MIN = -40.0;
+const UV_MAX = 40.0;
+
+type TestWindParams = {
+  uUvMin: number;
+  uUvMax: number;
+};
+
+function applyTestWindParams(mat: THREE.ShaderMaterial, p: TestWindParams) {
+  mat.uniforms.uUvMin.value = p.uUvMin;
+  mat.uniforms.uUvMax.value = p.uUvMax;
+}
+
+function animateFade(
+  ms: number,
+  isCancelled: () => boolean,
+  onUpdate: (t: number) => void,
+  onDone?: () => void
+) {
+  const start = performance.now();
+  function step(now: number) {
+    if (isCancelled()) return;
+    const t = Math.min(1, (now - start) / Math.max(ms, 1));
+    onUpdate(t);
+    if (t < 1) requestAnimationFrame(step);
+    else onDone?.();
+  }
+  requestAnimationFrame(step);
+}
 
 export default function TestWindLayer() {
   const { engineReady, sceneRef, globeRef, timestamp, signalReady } =
     useEarthLayer("wind-uv-925");
 
-  const meshRef = useRef<THREE.Mesh | null>(null);
+  const meshARef = useRef<THREE.Mesh | null>(null);
+  const meshBRef = useRef<THREE.Mesh | null>(null);
 
-  // these MUST match export_uv_925_rgb.py
-  const UV_MIN = -40.0;
-  const UV_MAX = 40.0;
+  const activeRef = useRef<"A" | "B">("A");
+  const reqIdRef = useRef(0);
+  const pendingRef = useRef<TestWindParams>({ uUvMin: UV_MIN, uUvMax: UV_MAX });
 
-  // init once
   useEffect(() => {
     if (!engineReady) return;
     if (!sceneRef.current || !globeRef.current) return;
@@ -25,124 +56,168 @@ export default function TestWindLayer() {
     const LIFT = R * 0.002;
     const geom = new THREE.SphereGeometry(R + LIFT, 128, 128);
 
-    const mat = new THREE.ShaderMaterial({
-      transparent: true,
-      depthWrite: false,
-      depthTest: true,
-      uniforms: {
-        uTex: { value: null as THREE.Texture | null },
-        uLonOffset: { value: 0.25 }, // same convention as your other layers
+    const makeMaterial = () =>
+      new THREE.ShaderMaterial({
+        transparent: true,
+        depthWrite: false,
+        depthTest: true,
+        uniforms: {
+          uTex: { value: null as THREE.Texture | null },
+          uLonOffset: { value: 0.25 },
+          uUvMin: { value: UV_MIN },
+          uUvMax: { value: UV_MAX },
+          uLayerOpacity: { value: 1.0 },
+        },
+        vertexShader: `
+          varying vec2 vUv;
+          void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform sampler2D uTex;
+          uniform float uLonOffset;
+          uniform float uUvMin;
+          uniform float uUvMax;
+          uniform float uLayerOpacity;
 
-        // decode params (match python export scaling)
-        uUvMin: { value: UV_MIN },
-        uUvMax: { value: UV_MAX },
-      },
+          varying vec2 vUv;
 
-      vertexShader: `
-        varying vec2 vUv;
-        void main() {
-          vUv = uv;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
+          vec2 decodeUV(vec2 rg01) {
+            float u = mix(uUvMin, uUvMax, rg01.r);
+            float v = mix(uUvMin, uUvMax, rg01.g);
+            return vec2(u, v);
+          }
 
-      fragmentShader: `
-        uniform sampler2D uTex;
-        uniform float uLonOffset;
-        uniform float uUvMin;
-        uniform float uUvMax;
+          void main() {
+            vec2 uv = vUv;
+            uv.x = fract(uv.x + uLonOffset);
 
-        varying vec2 vUv;
+            vec4 texel = texture2D(uTex, uv);
+            vec2 wind = decodeUV(texel.rg);
 
-        // PNG channels arrive normalized to 0..1 in the shader.
-        // Your python saved uint8 where:
-        //   r8 = (u - UV_MIN) * 255/(UV_MAX-UV_MIN) clipped
-        // so decoding is:
-        //   u = mix(UV_MIN, UV_MAX, tex.r)
-        vec2 decodeUV(vec2 rg01) {
-          float u = mix(uUvMin, uUvMax, rg01.r);
-          float v = mix(uUvMin, uUvMax, rg01.g);
-          return vec2(u, v);
-        }
+            vec2 rg01 = (wind - vec2(uUvMin)) / (uUvMax - uUvMin);
 
-        void main() {
-        //   if (uTex == NULL) discard;
+            float speed = length(wind);
+            float b = clamp(speed / uUvMax, 0.0, 1.0);
 
-          vec2 uv = vUv;
-          uv.x = fract(uv.x + uLonOffset);
+            vec4 col = vec4(rg01.r, rg01.g, b, 1.0);
+            col = vec4(0.0, 0.0, b, 1.0);
+            col.a *= clamp(uLayerOpacity, 0.0, 1.0);
+            gl_FragColor = col;
+          }
+        `,
+      });
 
-          vec4 texel = texture2D(uTex, uv);
-          vec2 wind = decodeUV(texel.rg);
+    const matA = makeMaterial();
+    const matB = makeMaterial();
 
-          // Display:
-          // Re-encode u and v back to 0..1 (same mapping as python) and show as RG.
-          // This makes the screen show exactly what’s inside the PNG, but "proved" via decode->encode.
-          vec2 rg01 = (wind - vec2(uUvMin)) / (uUvMax - uUvMin);
+    const meshA = new THREE.Mesh(geom, matA);
+    meshA.name = "wind-uv-925-layer-A";
+    meshA.renderOrder = 55;
+    meshA.frustumCulled = false;
 
-          // optional: add speed into B so you can see magnitude at a glance
-          float speed = length(wind);
-          float b = clamp(speed / uUvMax, 0.0, 1.0);
+    const meshB = new THREE.Mesh(geom, matB);
+    meshB.name = "wind-uv-925-layer-B";
+    meshB.renderOrder = 55;
+    meshB.frustumCulled = false;
 
-          gl_FragColor = vec4(rg01.r, rg01.g, b, 1.0);
-          gl_FragColor = vec4(0.0, 0.0, b, 1.0);
-        // gl_FragColor = vec4(texel);
-        }
-      `,
-    });
+    matB.uniforms.uLayerOpacity.value = 0.0;
 
-    const mesh = new THREE.Mesh(geom, mat);
-    mesh.name = "wind-uv-925-layer";
-    mesh.renderOrder = 55; // draw after moisture (50)
-    mesh.frustumCulled = false;
-    mesh.visible = true;
+    meshA.visible = true;
+    meshB.visible = true;
 
-    scene.add(mesh);
-    meshRef.current = mesh;
+    scene.add(meshA);
+    scene.add(meshB);
+
+    meshARef.current = meshA;
+    meshBRef.current = meshB;
+    activeRef.current = "A";
 
     return () => {
-      meshRef.current = null;
-      mesh.removeFromParent();
-      geom.dispose();
-      mat.dispose();
-      const t = mat.uniforms.uTex.value as THREE.Texture | null;
-      if (t) t.dispose();
-    };
-  }, [engineReady]);
+      meshARef.current = null;
+      meshBRef.current = null;
 
-  // update on timestamp: load new png as texture and set uniform
+      meshA.removeFromParent();
+      meshB.removeFromParent();
+      geom.dispose();
+
+      for (const mesh of [meshA, meshB]) {
+        const mat = mesh.material as THREE.ShaderMaterial;
+        const tex = mat.uniforms.uTex.value as THREE.Texture | null;
+        if (tex) tex.dispose();
+        mat.dispose();
+      }
+    };
+  }, [engineReady, globeRef, sceneRef]);
+
   useEffect(() => {
     if (!engineReady) return;
-    const mesh = meshRef.current;
-    if (!mesh) return;
+    const meshA = meshARef.current;
+    const meshB = meshBRef.current;
+    if (!meshA || !meshB) return;
 
     let cancelled = false;
+    const myReqId = ++reqIdRef.current;
+    const isCancelled = () => cancelled || myReqId !== reqIdRef.current;
 
-    const mat = mesh.material as THREE.ShaderMaterial;
+    meshA.visible = true;
+    meshB.visible = true;
+
+    const activeKey = activeRef.current;
+    const activeMesh = activeKey === "A" ? meshA : meshB;
+    const nextMesh = activeKey === "A" ? meshB : meshA;
+
+    const activeMat = activeMesh.material as THREE.ShaderMaterial;
+    const nextMat = nextMesh.material as THREE.ShaderMaterial;
+
     const url = windUvRgApiUrl(timestamp, 250);
 
     new THREE.TextureLoader().load(
       url,
       (tex) => {
-        if (cancelled) {
+        if (isCancelled()) {
           tex.dispose();
           return;
         }
 
-        tex.colorSpace = THREE.NoColorSpace;
-        tex.flipY = true; // keep consistent with your other layer
-        tex.wrapS = THREE.RepeatWrapping;
-        tex.wrapT = THREE.RepeatWrapping;
+        configureDataTexture(tex);
 
-        const prev = mat.uniforms.uTex.value as THREE.Texture | null;
-        mat.uniforms.uTex.value = tex;
-        mat.needsUpdate = true;
+        const latest = pendingRef.current;
+        applyTestWindParams(nextMat, latest);
 
-        if (prev) prev.dispose();
+        const prevNextTex = nextMat.uniforms.uTex.value as THREE.Texture | null;
+        nextMat.uniforms.uTex.value = tex;
+        nextMat.needsUpdate = true;
+        if (prevNextTex) prevNextTex.dispose();
+
+        nextMat.uniforms.uLayerOpacity.value = 0.0;
+        activeMat.uniforms.uLayerOpacity.value = 1.0;
+
+        const FADE_MS = 220;
+
+        animateFade(
+          FADE_MS,
+          isCancelled,
+          (t) => {
+            activeMat.uniforms.uLayerOpacity.value = 1.0 - t;
+            nextMat.uniforms.uLayerOpacity.value = t;
+          },
+          () => {
+            if (isCancelled()) return;
+
+            activeRef.current = activeKey === "A" ? "B" : "A";
+            activeMat.uniforms.uLayerOpacity.value = 0.0;
+            nextMat.uniforms.uLayerOpacity.value = 1.0;
+          }
+        );
 
         signalReady(timestamp);
       },
       undefined,
       (err) => {
+        if (isCancelled()) return;
         console.error("Failed to load wind uv 925 png", err);
         signalReady(timestamp);
       }

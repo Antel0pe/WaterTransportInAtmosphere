@@ -4,196 +4,279 @@ import * as THREE from "three";
 import { useEarthLayer } from "./EarthBase";
 import { ivtApiUrl } from "../utils/ApiResponses";
 import { useControls } from "../../state/controlsStore";
+import { configureDataTexture } from "./shaderUtils";
+
+type IVTParams = ReturnType<typeof useControls.getState>["ivt"];
+
+function applyIVTParams(mat: THREE.ShaderMaterial, p: IVTParams) {
+  mat.uniforms.uMin.value = p.uIvtMin;
+  mat.uniforms.uMax.value = p.uIvtMax;
+  mat.uniforms.uScale.value = p.uScale;
+  mat.uniforms.uGamma.value = p.uGamma;
+}
+
+function animateFade(
+  ms: number,
+  isCancelled: () => boolean,
+  onUpdate: (t: number) => void,
+  onDone?: () => void
+) {
+  const start = performance.now();
+  function step(now: number) {
+    if (isCancelled()) return;
+    const t = Math.min(1, (now - start) / Math.max(ms, 1));
+    onUpdate(t);
+    if (t < 1) requestAnimationFrame(step);
+    else onDone?.();
+  }
+  requestAnimationFrame(step);
+}
 
 export default function IVTLayer() {
-    const { engineReady, sceneRef, globeRef, timestamp, signalReady } =
-        useEarthLayer("ivt");
+  const { engineReady, sceneRef, globeRef, timestamp, signalReady } =
+    useEarthLayer("ivt");
 
-    const meshRef = useRef<THREE.Mesh | null>(null);
+  const meshARef = useRef<THREE.Mesh | null>(null);
+  const meshBRef = useRef<THREE.Mesh | null>(null);
 
-    // init once
-    useEffect(() => {
-        if (!engineReady) return;
-        if (!sceneRef.current || !globeRef.current) return;
+  const activeRef = useRef<"A" | "B">("A");
+  const reqIdRef = useRef(0);
+  const pendingRef = useRef<IVTParams | null>(null);
 
-        const scene = sceneRef.current;
+  useEffect(() => {
+    if (!engineReady) return;
+    if (!sceneRef.current || !globeRef.current) return;
 
-        const R = 100;
-        const LIFT = R * 0.002;
-        const geom = new THREE.SphereGeometry(R + LIFT, 128, 128);
+    const scene = sceneRef.current;
 
-        // single source of truth: store defaults
-        const s = useControls.getState();
+    const R = 100;
+    const LIFT = R * 0.002;
+    const geom = new THREE.SphereGeometry(R + LIFT, 128, 128);
 
-        const mat = new THREE.ShaderMaterial({
-            transparent: true,
-            depthWrite: false,
-            depthTest: true,
-            uniforms: {
-                uTex: { value: null as THREE.Texture | null },
-                uLonOffset: { value: 0.25 },
+    const s = useControls.getState();
+    pendingRef.current = s.ivt;
 
-                // min/max come from the store (hook defaults)
-                uMin: { value: s.ivt.uIvtMin },
-                uMax: { value: s.ivt.uIvtMax },
-                uScale: { value: s.ivt.uScale },
-                uGamma: { value: s.ivt.uGamma },
+    const makeMaterial = () =>
+      new THREE.ShaderMaterial({
+        transparent: true,
+        depthWrite: false,
+        depthTest: true,
+        uniforms: {
+          uTex: { value: null as THREE.Texture | null },
+          uLonOffset: { value: 0.25 },
+          uMin: { value: s.ivt.uIvtMin },
+          uMax: { value: s.ivt.uIvtMax },
+          uScale: { value: s.ivt.uScale },
+          uGamma: { value: s.ivt.uGamma },
+          uLayerOpacity: { value: 1.0 },
+        },
+        vertexShader: `
+          varying vec2 vUv;
+          void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform sampler2D uTex;
+          uniform float uLonOffset;
 
-            },
+          uniform float uMin;
+          uniform float uMax;
 
-            vertexShader: `
-        varying vec2 vUv;
-        void main() {
-          vUv = uv;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
+          uniform float uScale;
+          uniform float uGamma;
+          uniform float uLayerOpacity;
 
-            fragmentShader: `
-        uniform sampler2D uTex;
-        uniform float uLonOffset;
+          varying vec2 vUv;
 
-        uniform float uMin;
-        uniform float uMax;
+          float hash12(vec2 p){
+            vec3 p3  = fract(vec3(p.xyx) * 0.1031);
+            p3 += dot(p3, p3.yzx + 33.33);
+            return fract((p3.x + p3.y) * p3.z);
+          }
 
-        uniform float uScale;
-        uniform float uGamma;
+          void main() {
+            vec2 uv = vUv;
+            uv.x = fract(uv.x + uLonOffset);
 
-        varying vec2 vUv;
+            vec4 tex = texture2D(uTex, uv);
 
-        float hash12(vec2 p){
-          vec3 p3  = fract(vec3(p.xyx) * 0.1031);
-          p3 += dot(p3, p3.yzx + 33.33);
-          return fract((p3.x + p3.y) * p3.z);
-        }
+            float ivt1000 = mix(uMin, uMax, tex.r);
+            float ivt925  = mix(uMin, uMax, tex.b);
+            float sumIvt = ivt1000 + ivt925;
 
-        void main() {
-          vec2 uv = vUv;
-          uv.x = fract(uv.x + uLonOffset);
+            float denom = max(2.0 * (uMax - uMin), 1e-9);
+            float t = clamp((sumIvt - 2.0*uMin) / denom, 0.0, 1.0);
 
-          vec4 tex = texture2D(uTex, uv);
+            t = clamp(t * uScale, 0.0, 1.0);
+            t = pow(t, uGamma);
 
-          // r = 1000 hPa, b = 925 hPa (both encoded 0..1 from uMin..uMax)
-          float ivt1000 = mix(uMin, uMax, tex.r);
-          float ivt925  = mix(uMin, uMax, tex.b);
-          float sumIvt = ivt1000 + ivt925;
+            vec3 col = vec3(0.0, t, 0.0);
+            col.g += (hash12(gl_FragCoord.xy) - 0.5) * 0.01;
 
-          // Normalize sum from [2*uMin .. 2*uMax] -> [0..1]
-          float denom = max(2.0 * (uMax - uMin), 1e-9);
-          float t = clamp((sumIvt - 2.0*uMin) / denom, 0.0, 1.0);
+            float alpha = smoothstep(0.02, 0.25, t) * clamp(uLayerOpacity, 0.0, 1.0);
 
-          // scale + gamma
-          t = clamp(t * uScale, 0.0, 1.0);
-          t = pow(t, uGamma);
+            gl_FragColor = vec4(col, alpha);
+          }
+        `,
+      });
 
-          // pure green
-          vec3 col = vec3(0.0, t, 0.0);
+    const matA = makeMaterial();
+    const matB = makeMaterial();
 
-          // tiny dithering to reduce banding
-          col.g += (hash12(gl_FragCoord.xy) - 0.5) * 0.01;
+    const meshA = new THREE.Mesh(geom, matA);
+    meshA.name = "ivt-layer-A";
+    meshA.renderOrder = 51;
+    meshA.frustumCulled = false;
 
-          float alpha = smoothstep(0.02, 0.25, t);
+    const meshB = new THREE.Mesh(geom, matB);
+    meshB.name = "ivt-layer-B";
+    meshB.renderOrder = 51;
+    meshB.frustumCulled = false;
 
-          gl_FragColor = vec4(col, alpha);
-        }
-      `,
-        });
+    matB.uniforms.uLayerOpacity.value = 0.0;
 
-        const mesh = new THREE.Mesh(geom, mat);
-        mesh.name = "ivt-layer";
-        mesh.renderOrder = 51;
-        mesh.frustumCulled = false;
+    meshA.visible = s.layers.ivt;
+    meshB.visible = s.layers.ivt;
 
-        mesh.visible = s.layers.ivt;
+    scene.add(meshA);
+    scene.add(meshB);
 
-        scene.add(mesh);
-        meshRef.current = mesh;
+    meshARef.current = meshA;
+    meshBRef.current = meshB;
+    activeRef.current = "A";
 
-        return () => {
-            meshRef.current = null;
-            mesh.removeFromParent();
-            geom.dispose();
-            mat.dispose();
-            const t = mat.uniforms.uTex.value as THREE.Texture | null;
-            if (t) t.dispose();
-        };
-    }, [engineReady]);
+    return () => {
+      meshARef.current = null;
+      meshBRef.current = null;
 
-    // subscribe: visibility + params
-    useEffect(() => {
-        if (!engineReady) return;
-        const mesh = meshRef.current;
-        if (!mesh) return;
+      meshA.removeFromParent();
+      meshB.removeFromParent();
+      geom.dispose();
 
+      for (const mesh of [meshA, meshB]) {
         const mat = mesh.material as THREE.ShaderMaterial;
+        const tex = mat.uniforms.uTex.value as THREE.Texture | null;
+        if (tex) tex.dispose();
+        mat.dispose();
+      }
+    };
+  }, [engineReady, globeRef, sceneRef]);
 
-        const unsubVis = useControls.subscribe(
-            (st) => st.layers.ivt,
-            (v) => {
-                mesh.visible = v;
-            }
+  useEffect(() => {
+    if (!engineReady) return;
+    const meshA = meshARef.current;
+    const meshB = meshBRef.current;
+    if (!meshA || !meshB) return;
+
+    pendingRef.current = useControls.getState().ivt;
+
+    const unsubVis = useControls.subscribe(
+      (st) => st.layers.ivt,
+      (v) => {
+        meshA.visible = v;
+        meshB.visible = v;
+      }
+    );
+
+    const unsubParams = useControls.subscribe(
+      (st) => st.ivt,
+      (p) => {
+        pendingRef.current = p;
+      }
+    );
+
+    return () => {
+      unsubVis();
+      unsubParams();
+    };
+  }, [engineReady]);
+
+  useEffect(() => {
+    if (!engineReady) return;
+    const meshA = meshARef.current;
+    const meshB = meshBRef.current;
+    if (!meshA || !meshB) return;
+
+    let cancelled = false;
+    const myReqId = ++reqIdRef.current;
+    const isCancelled = () => cancelled || myReqId !== reqIdRef.current;
+
+    if (!useControls.getState().layers.ivt) {
+      meshA.visible = false;
+      meshB.visible = false;
+      signalReady(timestamp);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    meshA.visible = true;
+    meshB.visible = true;
+
+    const activeKey = activeRef.current;
+    const activeMesh = activeKey === "A" ? meshA : meshB;
+    const nextMesh = activeKey === "A" ? meshB : meshA;
+
+    const activeMat = activeMesh.material as THREE.ShaderMaterial;
+    const nextMat = nextMesh.material as THREE.ShaderMaterial;
+
+    const url = ivtApiUrl(timestamp);
+
+    new THREE.TextureLoader().load(
+      url,
+      (tex) => {
+        if (isCancelled()) {
+          tex.dispose();
+          return;
+        }
+
+        configureDataTexture(tex);
+
+        const latest = pendingRef.current ?? useControls.getState().ivt;
+        applyIVTParams(nextMat, latest);
+
+        const prevNextTex = nextMat.uniforms.uTex.value as THREE.Texture | null;
+        nextMat.uniforms.uTex.value = tex;
+        nextMat.needsUpdate = true;
+        if (prevNextTex) prevNextTex.dispose();
+
+        nextMat.uniforms.uLayerOpacity.value = 0.0;
+        activeMat.uniforms.uLayerOpacity.value = 1.0;
+
+        const FADE_MS = 220;
+
+        animateFade(
+          FADE_MS,
+          isCancelled,
+          (t) => {
+            activeMat.uniforms.uLayerOpacity.value = 1.0 - t;
+            nextMat.uniforms.uLayerOpacity.value = t;
+          },
+          () => {
+            if (isCancelled()) return;
+
+            activeRef.current = activeKey === "A" ? "B" : "A";
+            activeMat.uniforms.uLayerOpacity.value = 0.0;
+            nextMat.uniforms.uLayerOpacity.value = 1.0;
+          }
         );
 
-        const unsubParams = useControls.subscribe(
-            (st) => st.ivt,
-            (p) => {
-                mat.uniforms.uMin.value = p.uIvtMin;
-                mat.uniforms.uMax.value = p.uIvtMax;
-                mat.uniforms.uScale.value = p.uScale;
-                mat.uniforms.uGamma.value = p.uGamma;
-            }
-        );
+        signalReady(timestamp);
+      },
+      undefined,
+      (err) => {
+        if (isCancelled()) return;
+        console.error("Failed to load ivt png", err);
+        signalReady(timestamp);
+      }
+    );
 
+    return () => {
+      cancelled = true;
+    };
+  }, [engineReady, timestamp, signalReady]);
 
-        return () => {
-            unsubVis();
-            unsubParams();
-        };
-    }, [engineReady]);
-
-    // update on timestamp: load new png as texture
-    useEffect(() => {
-        if (!engineReady) return;
-        const mesh = meshRef.current;
-        if (!mesh) return;
-
-        let cancelled = false;
-
-        const mat = mesh.material as THREE.ShaderMaterial;
-        const url = ivtApiUrl(timestamp);
-
-        new THREE.TextureLoader().load(
-            url,
-            (tex) => {
-                if (cancelled) {
-                    tex.dispose();
-                    return;
-                }
-
-                tex.colorSpace = THREE.NoColorSpace;
-                tex.flipY = true;
-                tex.wrapS = THREE.RepeatWrapping;
-                tex.wrapT = THREE.RepeatWrapping;
-
-                const prev = mat.uniforms.uTex.value as THREE.Texture | null;
-                mat.uniforms.uTex.value = tex;
-                mat.needsUpdate = true;
-
-                if (prev) prev.dispose();
-
-                signalReady(timestamp);
-            },
-            undefined,
-            (err) => {
-                console.error("Failed to load ivt png", err);
-                signalReady(timestamp);
-            }
-        );
-
-        return () => {
-            cancelled = true;
-        };
-    }, [engineReady, timestamp, signalReady]);
-
-    return null;
+  return null;
 }
