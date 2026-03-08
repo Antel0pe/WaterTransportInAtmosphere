@@ -58,3 +58,68 @@ export function verticalVelocityApiUrl(datehour: string, pressureLevel: number) 
 export function temperatureApiUrl(datehour: string, pressureLevel: number) {
   return `/api/temperature/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
 }
+
+export function backwardTrajectoryApiUrl() {
+  return "/api/backward_trajectory";
+}
+
+export type BackwardTrajectoryContourSnippet = {
+  level_m: number;
+  segment_index: number;
+  min_distance_deg: number;
+  points: LonLat[];
+};
+
+export type BackwardTrajectoryPoint = {
+  step_hour: number;
+  valid_time: string;
+  latitude: number;
+  longitude: number;
+  longitude_360: number;
+  tcw_kg_m2: number;
+  precip_mm: number;
+  evap_mm_added: number;
+  gph_m: number;
+  contours: BackwardTrajectoryContourSnippet[];
+};
+
+export type BackwardTrajectoryFile = {
+  metadata: {
+    target_name: string;
+    start_lat: number;
+    start_lon: number;
+    start_lon_360: number;
+    requested_start_time: string;
+    resolved_start_time: string;
+    pressure_level_hpa: number;
+    hours_back_requested: number;
+    hours_back_actual: number;
+    substeps: number;
+    contour_levels_m: number[];
+    max_contour_distance_deg: number;
+    generated_at_utc: string;
+  };
+  summary: {
+    point_count: number;
+    tcw_min_kg_m2: number;
+    tcw_max_kg_m2: number;
+    gph_min_m: number;
+    gph_max_m: number;
+    precip_total_mm: number;
+    evap_total_mm_added: number;
+  };
+  points: BackwardTrajectoryPoint[];
+  points_by_hour: Record<string, BackwardTrajectoryPoint>;
+};
+
+export async function fetchBackwardTrajectory(): Promise<BackwardTrajectoryFile> {
+  const res = await fetch(backwardTrajectoryApiUrl());
+
+  if (!res.ok) {
+    throw new Error(
+      `Backward trajectory fetch failed (${res.status} ${res.statusText})`
+    );
+  }
+
+  return (await res.json()) as BackwardTrajectoryFile;
+}

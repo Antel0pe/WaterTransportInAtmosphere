@@ -65,6 +65,14 @@ const WindTrailParticlesLayer = dynamic(() => import("./layers/WindTrailParticle
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
 
+const BackwardTrajectoryLayer = dynamic(
+  () => import("./layers/BackwardTrajectoryLayer"),
+  {
+    ssr: false,
+    loading: () => <div style={{ width: "100%", height: "100%" }} />,
+  }
+);
+
 const TimeSlider = dynamic(() => import("./TimeSlider"), {
   ssr: false,
   loading: () => <div style={{ height: "100%" }} />,
@@ -113,6 +121,7 @@ export default function HomeClient() {
             <VerticalVelocityLayer />
             <TemperatureLayer />
             <MslContoursLayer />
+            <BackwardTrajectoryLayer />
             {/* <WindUVArrowsLayer /> */}
             <WindTrailParticlesLayer heightTex={null} />
             {/* <TestWindLayer /> */}

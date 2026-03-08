@@ -5,6 +5,7 @@ export type LayerToggles = {
   moisture: boolean;
   evaporation: boolean;
   ivt: boolean;
+  backwardTrajectory: boolean;
 };
 
 type EvapParams = {
@@ -165,6 +166,7 @@ export const useControls = create<ControlsState>()(
       moisture: true,
       evaporation: false,
       ivt: false,
+      backwardTrajectory: false,
     },
 
     mslContours: {

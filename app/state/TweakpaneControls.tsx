@@ -39,6 +39,7 @@ export default function TweakpaneControls() {
       moisture: s0.layers.moisture,
       evaporation: s0.layers.evaporation,
       ivt: s0.layers.ivt,
+      backwardTrajectory: s0.layers.backwardTrajectory,
 
       uAnomMin: s0.moisture.uAnomMin,
       uAnomMax: s0.moisture.uAnomMax,
@@ -129,6 +130,7 @@ export default function TweakpaneControls() {
       ui.moisture = defaults.layers.moisture;
       ui.evaporation = defaults.layers.evaporation;
       ui.ivt = defaults.layers.ivt;
+      ui.backwardTrajectory = defaults.layers.backwardTrajectory;
 
       ui.uAnomMin = defaults.moisture.uAnomMin;
       ui.uAnomMax = defaults.moisture.uAnomMax;
@@ -197,12 +199,18 @@ export default function TweakpaneControls() {
     const bEvap = layersFolder.addBinding(ui, "evaporation", {
       label: "Evaporation",
     });
+    const bBackTraj = layersFolder.addBinding(ui, "backwardTrajectory", {
+      label: "Back Trajectory",
+    });
 
     bMoisture.on("change", (e) => {
       useControls.getState().setLayer("moisture", !!e.value);
     });
     bEvap.on("change", (e) => {
       useControls.getState().setLayer("evaporation", !!e.value);
+    });
+    bBackTraj.on("change", (e) => {
+      useControls.getState().setLayer("backwardTrajectory", !!e.value);
     });
 
     // ---- Moisture params (sliders) ----
@@ -570,6 +578,13 @@ export default function TweakpaneControls() {
       }
     );
 
+    const unsubBackTrajVis = useControls.subscribe(
+      (s) => s.layers.backwardTrajectory,
+      (v) => {
+        ui.backwardTrajectory = v;
+      }
+    );
+
     const unsubIVTParams = useControls.subscribe(
       (s) => s.ivt,
       (p) => {
@@ -785,6 +800,7 @@ export default function TweakpaneControls() {
       unsubMoistureParams();
       unsubEvapParams();
       unsubIVTVis();
+      unsubBackTrajVis();
       unsubIVTParams();
       unsubPVParams();
       unsubDivergenceParams();
