@@ -323,6 +323,238 @@ def extract_contour_segments(gph2d: xr.DataArray, levels: np.ndarray) -> dict[fl
     return segments_by_level
 
 
+def _interp_gph_value(gph2d: xr.DataArray, lon: float, lat: float) -> float:
+    val = gph2d.interp(
+        latitude=float(lat),
+        longitude=float(lon),
+        kwargs={"fill_value": "extrapolate"},
+    )
+    return float(val.values)
+
+
+def _nearest_contour_anchor(
+    gph2d: xr.DataArray,
+    levels: np.ndarray,
+    lon0: float,
+    lat0: float,
+) -> dict[str, Any] | None:
+    fig, ax = plt.subplots(figsize=(3, 2))
+    cs = ax.contour(
+        gph2d["longitude"].values,
+        gph2d["latitude"].values,
+        gph2d.values,
+        levels=levels,
+    )
+    plt.close(fig)
+
+    lon_scale = max(np.cos(np.deg2rad(lat0)), 1e-6)
+    best = None
+
+    for level, segs in zip(cs.levels, cs.allsegs):
+        for seg in segs:
+            seg = np.asarray(seg, dtype=float)
+            if seg.shape[0] < 2:
+                continue
+
+            d = np.sqrt(((seg[:, 0] - lon0) * lon_scale) ** 2 + (seg[:, 1] - lat0) ** 2)
+            idx = int(np.argmin(d))
+            dist = float(d[idx])
+
+            if best is None or dist < best["distance"]:
+                best = {
+                    "level": float(level),
+                    "segment": seg,
+                    "idx": idx,
+                    "distance": dist,
+                }
+
+    if best is None:
+        return None
+
+    seg = best["segment"]
+    idx = best["idx"]
+
+    if idx == 0:
+        tangent = seg[1] - seg[0]
+    elif idx == seg.shape[0] - 1:
+        tangent = seg[-1] - seg[-2]
+    else:
+        tangent = seg[idx + 1] - seg[idx - 1]
+
+    tangent_xy = np.array([tangent[0] * lon_scale, tangent[1]], dtype=float)
+    tangent_norm = np.linalg.norm(tangent_xy)
+    if tangent_norm < 1e-12:
+        return None
+    tangent_xy /= tangent_norm
+
+    normal_xy = np.array([-tangent_xy[1], tangent_xy[0]], dtype=float)
+
+    normal_lon = normal_xy[0] / lon_scale
+    normal_lat = normal_xy[1]
+    normal_norm = np.sqrt((normal_lon * lon_scale) ** 2 + normal_lat**2)
+    if normal_norm < 1e-12:
+        return None
+
+    normal_lon /= normal_norm
+    normal_lat /= normal_norm
+
+    return {
+        "contour_level": best["level"],
+        "contour_point": seg[idx],
+        "normal": np.array([normal_lon, normal_lat], dtype=float),
+        "distance": best["distance"],
+    }
+
+
+def _trace_monotonic_direction(
+    gph2d: xr.DataArray,
+    lon0: float,
+    lat0: float,
+    direction: np.ndarray,
+    *,
+    lon_min: float,
+    lon_max: float,
+    lat_min: float,
+    lat_max: float,
+    prefer: str = "decrease",
+    step_deg: float = 0.20,
+    max_steps: int = 220,
+    tol: float = 1e-3,
+) -> dict[str, Any]:
+    lon0 = float(lon0)
+    lat0 = float(lat0)
+    dir_lon = float(direction[0])
+    dir_lat = float(direction[1])
+
+    base_val = _interp_gph_value(gph2d, lon0, lat0)
+    samples = [(lon0, lat0, base_val)]
+    stop_reason = "max_steps"
+    final_idx = 0
+
+    for step in range(1, max_steps + 1):
+        lon = lon0 + dir_lon * step_deg * step
+        lat = lat0 + dir_lat * step_deg * step
+
+        if lon < lon_min or lon > lon_max or lat < lat_min or lat > lat_max:
+            stop_reason = "domain_edge"
+            break
+
+        val = _interp_gph_value(gph2d, lon, lat)
+        if not np.isfinite(val):
+            stop_reason = "nan"
+            break
+
+        samples.append((float(lon), float(lat), float(val)))
+
+        if len(samples) < 3:
+            final_idx = len(samples) - 1
+            continue
+
+        prev_val = samples[-2][2]
+        curr_val = samples[-1][2]
+
+        if prefer == "decrease":
+            if curr_val > prev_val + tol:
+                final_idx = len(samples) - 2
+                stop_reason = "reversed_to_increase"
+                break
+            final_idx = len(samples) - 1
+        else:
+            if curr_val < prev_val - tol:
+                final_idx = len(samples) - 2
+                stop_reason = "reversed_to_decrease"
+                break
+            final_idx = len(samples) - 1
+
+    if final_idx <= 0:
+        final_idx = len(samples) - 1
+
+    line = np.asarray([(p[0], p[1]) for p in samples[: final_idx + 1]], dtype=float)
+    final_lon, final_lat, final_val = samples[final_idx]
+
+    return {
+        "line": line,
+        "final_lon": float(final_lon),
+        "final_lat": float(final_lat),
+        "final_value": float(final_val),
+        "stop_reason": stop_reason,
+    }
+
+
+def _nearest_level(levels: np.ndarray, value: float) -> float:
+    levels = np.asarray(levels, dtype=float)
+    if levels.size == 0 or not np.isfinite(value):
+        return np.nan
+    return float(levels[np.argmin(np.abs(levels - float(value)))])
+
+
+def _contour_segments_for_level(
+    contour_dict: dict[float, list[np.ndarray]],
+    level_m: float,
+    tol: float = 1e-6,
+) -> list[np.ndarray]:
+    if not np.isfinite(level_m):
+        return []
+    if float(level_m) in contour_dict:
+        return contour_dict[float(level_m)]
+    for lev, segs in contour_dict.items():
+        if abs(float(lev) - float(level_m)) <= tol:
+            return segs
+    return []
+
+
+def _is_closed_contour(segment: np.ndarray, tol: float = 1e-3) -> bool:
+    if segment.shape[0] < 3:
+        return False
+    return bool(np.linalg.norm(segment[0] - segment[-1]) <= tol)
+
+
+def _final_contour_for_branch(
+    contour_dict: dict[float, list[np.ndarray]],
+    level_m: float,
+    final_lon: float,
+    final_lat: float,
+    branch: str,
+) -> dict[str, Any] | None:
+    segs = _contour_segments_for_level(contour_dict, level_m)
+    if not segs:
+        return None
+
+    seg_idx, seg, min_dist = _nearest_segment_with_idx(
+        segs,
+        float(final_lon),
+        float(final_lat),
+        max_dist_deg=360.0,
+    )
+    if seg is None or seg_idx is None:
+        return None
+
+    return {
+        "branch": branch,
+        "level_m": round(float(level_m), 3),
+        "gph_m": round(float(level_m), 3),
+        "segment_index": int(seg_idx),
+        "min_distance_deg": round(float(min_dist), 4),
+        "is_closed": _is_closed_contour(seg),
+        "points": _round_point_pairs(seg, ndigits=4),
+    }
+
+
+def _empty_final_extrema_contours(reason: str = "none exist") -> dict[str, Any]:
+    return {
+        "status": "none",
+        "message": reason,
+        "lower_branch": None,
+        "higher_branch": None,
+        "lower_gph_m": None,
+        "higher_gph_m": None,
+        "decreasing_contour": None,
+        "increasing_contour": None,
+        "lower_contour": None,
+        "higher_contour": None,
+    }
+
+
 def _round_point_pairs(arr: np.ndarray, ndigits: int = 4) -> list[list[float]]:
     out: list[list[float]] = []
     for lon, lat in arr:
@@ -453,6 +685,7 @@ def build_export_payload(
 
     selected_points = trajectory_samples.copy().sort_values("valid_time").reset_index(drop=True)
     contour_by_hour: dict[int, list[dict[str, Any]]] = {}
+    final_extrema_contours_by_hour: dict[int, dict[str, Any]] = {}
 
     for idx, row in tqdm(
         selected_points.iterrows(),
@@ -460,10 +693,14 @@ def build_export_payload(
         desc="Clipping local contour snippets",
         unit="point",
     ):
+        step_hour = int(row["step_hour"])
         t_key = _nearest_hour_timestamp(row["valid_time"])
         contour_dict = gph_hourly_contours.get(t_key)
         if contour_dict is None:
-            contour_by_hour[int(row["step_hour"])] = []
+            contour_by_hour[step_hour] = []
+            final_extrema_contours_by_hour[step_hour] = _empty_final_extrema_contours(
+                "none exist"
+            )
             continue
 
         local_gph = gph_hourly_925_m.interp(
@@ -509,7 +746,151 @@ def build_export_payload(
                 }
             )
 
-        contour_by_hour[int(row["step_hour"])] = snippets
+        contour_by_hour[step_hour] = snippets
+
+        gph_frame = gph_hourly_925_m.sel(valid_time=np.datetime64(t_key))
+        lon0 = float(row["longitude_360"])
+        lat0 = float(row["latitude"])
+
+        anchor = _nearest_contour_anchor(gph_frame, contour_levels, lon0, lat0)
+        if anchor is None:
+            final_extrema_contours_by_hour[step_hour] = _empty_final_extrema_contours(
+                "none exist"
+            )
+            continue
+
+        gph_frame_full = (
+            era5_ds["z"]
+            .sel(
+                pressure_level=pressure_level,
+                valid_time=np.datetime64(t_key),
+            )
+            / G0
+        ).load()
+        full_lon_min = float(np.nanmin(np.asarray(gph_frame_full["longitude"].values, dtype=float)))
+        full_lon_max = float(np.nanmax(np.asarray(gph_frame_full["longitude"].values, dtype=float)))
+        full_lat_min = float(np.nanmin(np.asarray(gph_frame_full["latitude"].values, dtype=float)))
+        full_lat_max = float(np.nanmax(np.asarray(gph_frame_full["latitude"].values, dtype=float)))
+
+        base_val = _interp_gph_value(gph_frame, lon0, lat0)
+        normal = np.asarray(anchor["normal"], dtype=float)
+        step_check = 0.20
+
+        plus_probe = _interp_gph_value(
+            gph_frame,
+            lon0 + normal[0] * step_check,
+            lat0 + normal[1] * step_check,
+        )
+        minus_probe = _interp_gph_value(
+            gph_frame,
+            lon0 - normal[0] * step_check,
+            lat0 - normal[1] * step_check,
+        )
+
+        d_plus = plus_probe - base_val
+        d_minus = minus_probe - base_val
+        tol_first = 1e-3
+
+        if d_plus < -tol_first and d_minus > tol_first:
+            dec_dir = normal
+            inc_dir = -normal
+        elif d_minus < -tol_first and d_plus > tol_first:
+            dec_dir = -normal
+            inc_dir = normal
+        else:
+            if d_plus <= d_minus:
+                dec_dir = normal
+                inc_dir = -normal
+            else:
+                dec_dir = -normal
+                inc_dir = normal
+
+        dec_trace = _trace_monotonic_direction(
+            gph_frame_full,
+            lon0,
+            lat0,
+            dec_dir,
+            lon_min=full_lon_min,
+            lon_max=full_lon_max,
+            lat_min=full_lat_min,
+            lat_max=full_lat_max,
+            prefer="decrease",
+            step_deg=0.20,
+            max_steps=220,
+            tol=1e-3,
+        )
+        inc_trace = _trace_monotonic_direction(
+            gph_frame_full,
+            lon0,
+            lat0,
+            inc_dir,
+            lon_min=full_lon_min,
+            lon_max=full_lon_max,
+            lat_min=full_lat_min,
+            lat_max=full_lat_max,
+            prefer="increase",
+            step_deg=0.20,
+            max_steps=220,
+            tol=1e-3,
+        )
+
+        dec_level = _nearest_level(contour_levels, dec_trace["final_value"])
+        inc_level = _nearest_level(contour_levels, inc_trace["final_value"])
+        full_levels = np.asarray(
+            sorted(
+                {
+                    float(lv)
+                    for lv in [dec_level, inc_level]
+                    if np.isfinite(float(lv))
+                }
+            ),
+            dtype=float,
+        )
+        full_contour_dict = (
+            extract_contour_segments(gph_frame_full, full_levels)
+            if full_levels.size
+            else {}
+        )
+
+        dec_contour = _final_contour_for_branch(
+            full_contour_dict,
+            dec_level,
+            dec_trace["final_lon"],
+            dec_trace["final_lat"],
+            "decreasing",
+        )
+        inc_contour = _final_contour_for_branch(
+            full_contour_dict,
+            inc_level,
+            inc_trace["final_lon"],
+            inc_trace["final_lat"],
+            "increasing",
+        )
+
+        available = [c for c in [dec_contour, inc_contour] if c is not None]
+        if not available:
+            final_extrema_contours_by_hour[step_hour] = _empty_final_extrema_contours(
+                "none exist"
+            )
+            continue
+
+        lower = min(available, key=lambda c: float(c["gph_m"]))
+        higher = max(available, key=lambda c: float(c["gph_m"]))
+        status = "ok" if len(available) == 2 else "partial"
+        message = "ok" if status == "ok" else "one contour exists"
+
+        final_extrema_contours_by_hour[step_hour] = {
+            "status": status,
+            "message": message,
+            "lower_branch": lower["branch"],
+            "higher_branch": higher["branch"],
+            "lower_gph_m": lower["gph_m"],
+            "higher_gph_m": higher["gph_m"],
+            "decreasing_contour": dec_contour,
+            "increasing_contour": inc_contour,
+            "lower_contour": lower,
+            "higher_contour": higher,
+        }
 
     points: list[dict[str, Any]] = []
     for row in trajectory_samples.itertuples(index=False):
@@ -526,6 +907,9 @@ def build_export_payload(
                 "evap_mm_added": round(float(row.evap_mm_added), 4),
                 "gph_m": round(float(row.gph_m), 3),
                 "contours": contour_by_hour.get(step_hour, []),
+                "final_extrema_contours": final_extrema_contours_by_hour.get(
+                    step_hour, _empty_final_extrema_contours("none exist")
+                ),
             }
         )
 
@@ -533,6 +917,28 @@ def build_export_payload(
 
     precip_sum = float(np.nansum(trajectory_samples["tp_mm"].to_numpy(dtype=float)))
     evap_sum = float(np.nansum(trajectory_samples["evap_mm_added"].to_numpy(dtype=float)))
+    extrema_contours_any = int(
+        sum(
+            1
+            for fc in final_extrema_contours_by_hour.values()
+            if str(fc.get("status", "none")) != "none"
+        )
+    )
+    extrema_contours_both = int(
+        sum(1 for fc in final_extrema_contours_by_hour.values() if fc.get("status") == "ok")
+    )
+
+    contour_scale_min = (
+        float(np.nanmin(contour_levels))
+        if np.asarray(contour_levels, dtype=float).size
+        else 560.0
+    )
+    contour_scale_max = (
+        float(np.nanmax(contour_levels))
+        if np.asarray(contour_levels, dtype=float).size
+        else 940.0
+    )
+    contour_scale_mid = 0.5 * (contour_scale_min + contour_scale_max)
 
     payload = {
         "metadata": {
@@ -548,6 +954,11 @@ def build_export_payload(
             "substeps": int(substeps),
             "contour_levels_m": [float(x) for x in contour_levels],
             "max_contour_distance_deg": float(max_contour_distance_deg),
+            "final_extrema_contour_scale_m": {
+                "min": contour_scale_min,
+                "mid": contour_scale_mid,
+                "max": contour_scale_max,
+            },
             "generated_at_utc": _fmt_utc(pd.Timestamp.now(tz="UTC")),
         },
         "summary": {
@@ -558,6 +969,8 @@ def build_export_payload(
             "gph_max_m": round(float(np.nanmax(trajectory_samples["gph_m"])), 3),
             "precip_total_mm": round(precip_sum, 4),
             "evap_total_mm_added": round(evap_sum, 4),
+            "extrema_contour_hours_with_any": extrema_contours_any,
+            "extrema_contour_hours_with_both": extrema_contours_both,
         },
         "points": points,
         "points_by_hour": points_by_hour,

@@ -9,3 +9,5 @@ source of atmospheric river
 - for wind parcels, backwards integrate
 - for moisture similarly backwards integrate but show according to moisture/precip changes too. like a line but its colored say black to white where white is more moisture this can be more evap or less precip
 - for pressure track lowest gph?
+
+- figure out why areas of lower pressure/gph are lower. i guess download all/most levels and look at converg/diverg or temp or some other stuff?

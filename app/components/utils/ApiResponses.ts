@@ -70,6 +70,29 @@ export type BackwardTrajectoryContourSnippet = {
   points: LonLat[];
 };
 
+export type BackwardTrajectoryExtremaContour = {
+  branch: "decreasing" | "increasing";
+  level_m: number;
+  gph_m: number;
+  segment_index: number;
+  min_distance_deg: number;
+  is_closed: boolean;
+  points: LonLat[];
+};
+
+export type BackwardTrajectoryFinalExtremaContours = {
+  status: "ok" | "partial" | "none";
+  message: string;
+  lower_branch: "decreasing" | "increasing" | null;
+  higher_branch: "decreasing" | "increasing" | null;
+  lower_gph_m: number | null;
+  higher_gph_m: number | null;
+  decreasing_contour: BackwardTrajectoryExtremaContour | null;
+  increasing_contour: BackwardTrajectoryExtremaContour | null;
+  lower_contour: BackwardTrajectoryExtremaContour | null;
+  higher_contour: BackwardTrajectoryExtremaContour | null;
+};
+
 export type BackwardTrajectoryPoint = {
   step_hour: number;
   valid_time: string;
@@ -81,6 +104,7 @@ export type BackwardTrajectoryPoint = {
   evap_mm_added: number;
   gph_m: number;
   contours: BackwardTrajectoryContourSnippet[];
+  final_extrema_contours: BackwardTrajectoryFinalExtremaContours;
 };
 
 export type BackwardTrajectoryFile = {
@@ -97,6 +121,11 @@ export type BackwardTrajectoryFile = {
     substeps: number;
     contour_levels_m: number[];
     max_contour_distance_deg: number;
+    final_extrema_contour_scale_m: {
+      min: number;
+      mid: number;
+      max: number;
+    };
     generated_at_utc: string;
   };
   summary: {
@@ -107,6 +136,8 @@ export type BackwardTrajectoryFile = {
     gph_max_m: number;
     precip_total_mm: number;
     evap_total_mm_added: number;
+    extrema_contour_hours_with_any: number;
+    extrema_contour_hours_with_both: number;
   };
   points: BackwardTrajectoryPoint[];
   points_by_hour: Record<string, BackwardTrajectoryPoint>;
