@@ -11,3 +11,6 @@ source of atmospheric river
 - for pressure track lowest gph?
 
 - figure out why areas of lower pressure/gph are lower. i guess download all/most levels and look at converg/diverg or temp or some other stuff?
+
+- fix the timestamp based updating stuff you broke. not updating when changing time, when tweaking params doesnt do anything until switch timestamp etc. 
+- for the back traj the dots show color based on evap/precip and the more it dominantes the more red/blue. if neither dominates it is grey but how does it show that magnitude of both was big vs neither really happened.
