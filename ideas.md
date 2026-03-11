@@ -14,3 +14,7 @@ source of atmospheric river
 
 - fix the timestamp based updating stuff you broke. not updating when changing time, when tweaking params doesnt do anything until switch timestamp etc. 
 - for the back traj the dots show color based on evap/precip and the more it dominantes the more red/blue. if neither dominates it is grey but how does it show that magnitude of both was big vs neither really happened.
+
+- make curated views rather than raw data layers like something thst shows source, transport, landfall, decay etc that show multiple layers/data together
+- for back trajectory layer show ensemble, slightly perturb target lat lon then go backwards 
+- random red line segments at the end of contour segments

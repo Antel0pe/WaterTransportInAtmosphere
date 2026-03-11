@@ -65,7 +65,9 @@ export function backwardTrajectoryApiUrl() {
 
 export type BackwardTrajectoryContourSnippet = {
   level_m: number;
+  gph_m: number;
   segment_index: number;
+  piece_index?: number;
   min_distance_deg: number;
   points: LonLat[];
 };

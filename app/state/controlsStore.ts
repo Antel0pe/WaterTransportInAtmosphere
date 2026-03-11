@@ -163,18 +163,18 @@ type ControlsState = {
 export const useControls = create<ControlsState>()(
   subscribeWithSelector((set) => ({
     layers: {
-      moisture: true,
+      moisture: false,
       evaporation: false,
       ivt: false,
-      backwardTrajectory: false,
+      backwardTrajectory: true,
     },
 
     mslContours: {
       contrast: 3.5,
       opacity: 0.95,
     },
-    contoursPressure: "msl",
-    windTrailsPressure: 925,
+    contoursPressure: "none",
+    windTrailsPressure: "none",
 
     evap: {
       uEvapMin: -5e-4,

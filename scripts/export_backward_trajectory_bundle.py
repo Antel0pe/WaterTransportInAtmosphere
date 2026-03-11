@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export backward trajectory diagnostics and nearby contour snippets to JSON."""
+"""Export backward trajectory diagnostics and clipped contour segments to JSON."""
 
 from __future__ import annotations
 
@@ -18,6 +18,12 @@ import xarray as xr
 from tqdm.auto import tqdm
 
 G0 = 9.80665
+GRAD_STEP_KM = 35.0
+GRAD_PROBE_DEG = 0.20
+GRAD_MIN_MAG_M_PER_KM = 0.02
+GRAD_MAX_STEPS = 220
+GRAD_MONOTONIC_TOL_M = 1e-3
+GRAD_TRACE_SOUTH_LAT_MIN = 23.0
 
 
 def _fmt_utc(ts: Any) -> str:
@@ -123,187 +129,6 @@ def _nearest_hour_timestamp(ts: Any) -> pd.Timestamp:
     return pd.Timestamp(ts).round("h")
 
 
-def _bracketing_levels(levels: np.ndarray, value: float) -> np.ndarray:
-    levels_arr = np.asarray(sorted(set(float(x) for x in levels)), dtype=float)
-    if levels_arr.size == 0:
-        return np.array([], dtype=float)
-
-    v = float(value)
-    chosen: list[float] = []
-
-    below = levels_arr[levels_arr <= v]
-    above = levels_arr[levels_arr >= v]
-
-    if below.size:
-        chosen.append(float(below.max()))
-    if above.size:
-        up = float(above.min())
-        if (not chosen) or (up != chosen[0]):
-            chosen.append(up)
-
-    if len(chosen) < 2 and levels_arr.size >= 2:
-        rem = [float(lv) for lv in levels_arr if float(lv) not in chosen]
-        rem = sorted(rem, key=lambda lv: abs(lv - v))
-        chosen.extend(rem[: 2 - len(chosen)])
-
-    return np.array(chosen[:2], dtype=float)
-
-
-def _point_xy(lon: float, lat: float, lon_scale: float) -> np.ndarray:
-    return np.array([float(lon) * lon_scale, float(lat)], dtype=float)
-
-
-def _halfplanes_for_selected_point(points_df: pd.DataFrame, idx: int):
-    b_lon = float(points_df.at[idx, "longitude_360"])
-    b_lat = float(points_df.at[idx, "latitude"])
-
-    lon_scale = max(np.cos(np.deg2rad(b_lat)), 1e-6)
-    b_xy = _point_xy(b_lon, b_lat, lon_scale)
-
-    halfplanes = []
-
-    if idx > 0:
-        a_lon = float(points_df.at[idx - 1, "longitude_360"])
-        a_lat = float(points_df.at[idx - 1, "latitude"])
-        a_xy = _point_xy(a_lon, a_lat, lon_scale)
-
-        mid = 0.5 * (a_xy + b_xy)
-        normal = b_xy - a_xy
-        halfplanes.append((mid, normal, lon_scale))
-
-    if idx < len(points_df) - 1:
-        c_lon = float(points_df.at[idx + 1, "longitude_360"])
-        c_lat = float(points_df.at[idx + 1, "latitude"])
-        c_xy = _point_xy(c_lon, c_lat, lon_scale)
-
-        mid = 0.5 * (b_xy + c_xy)
-        normal = b_xy - c_xy
-        halfplanes.append((mid, normal, lon_scale))
-
-    return halfplanes
-
-
-def _signed_halfplane_distance(
-    pt: np.ndarray, mid_xy: np.ndarray, normal_xy: np.ndarray, lon_scale: float
-) -> float:
-    p_xy = _point_xy(pt[0], pt[1], lon_scale)
-    return float(np.dot(p_xy - mid_xy, normal_xy))
-
-
-def _append_point_unique(container: list[list[float]], pt: np.ndarray, tol: float = 1e-12):
-    if not container:
-        container.append(pt.tolist())
-        return
-    prev = np.asarray(container[-1], dtype=float)
-    if np.linalg.norm(prev - pt) > tol:
-        container.append(pt.tolist())
-
-
-def _clip_polyline_halfplane(
-    polyline: np.ndarray, mid_xy: np.ndarray, normal_xy: np.ndarray, lon_scale: float
-) -> list[np.ndarray]:
-    if polyline.shape[0] < 2:
-        return []
-
-    pieces: list[np.ndarray] = []
-    current: list[list[float]] = []
-
-    for i in range(polyline.shape[0] - 1):
-        p0 = polyline[i]
-        p1 = polyline[i + 1]
-
-        d0 = _signed_halfplane_distance(p0, mid_xy, normal_xy, lon_scale)
-        d1 = _signed_halfplane_distance(p1, mid_xy, normal_xy, lon_scale)
-
-        in0 = d0 >= 0.0
-        in1 = d1 >= 0.0
-
-        if in0 and not current:
-            _append_point_unique(current, p0)
-
-        if in0 and in1:
-            if not current:
-                _append_point_unique(current, p0)
-            _append_point_unique(current, p1)
-        elif in0 and not in1:
-            denom = d0 - d1
-            if abs(denom) > 1e-14:
-                t = d0 / denom
-                inter = p0 + t * (p1 - p0)
-                if not current:
-                    _append_point_unique(current, p0)
-                _append_point_unique(current, inter)
-            if len(current) >= 2:
-                pieces.append(np.asarray(current, dtype=float))
-            current = []
-        elif (not in0) and in1:
-            denom = d0 - d1
-            if abs(denom) > 1e-14:
-                t = d0 / denom
-                inter = p0 + t * (p1 - p0)
-                current = []
-                _append_point_unique(current, inter)
-                _append_point_unique(current, p1)
-            else:
-                current = []
-                _append_point_unique(current, p1)
-        else:
-            if len(current) >= 2:
-                pieces.append(np.asarray(current, dtype=float))
-            current = []
-
-    if len(current) >= 2:
-        pieces.append(np.asarray(current, dtype=float))
-
-    return pieces
-
-
-def _clip_polyline_to_point_cell(polyline: np.ndarray, halfplanes) -> list[np.ndarray]:
-    clipped = [polyline]
-    for mid_xy, normal_xy, lon_scale in halfplanes:
-        new_clipped: list[np.ndarray] = []
-        for piece in clipped:
-            new_clipped.extend(_clip_polyline_halfplane(piece, mid_xy, normal_xy, lon_scale))
-        clipped = new_clipped
-        if not clipped:
-            break
-    return clipped
-
-
-def _nearest_piece_to_point(pieces: list[np.ndarray], lon: float, lat: float) -> np.ndarray | None:
-    if not pieces:
-        return None
-    best_piece = None
-    best_dist = np.inf
-    for piece in pieces:
-        d = np.sqrt((piece[:, 0] - lon) ** 2 + (piece[:, 1] - lat) ** 2)
-        dmin = float(d.min())
-        if dmin < best_dist:
-            best_dist = dmin
-            best_piece = piece
-    return best_piece
-
-
-def _nearest_segment_with_idx(
-    segments: list[np.ndarray], lon: float, lat: float, max_dist_deg: float = 7.0
-):
-    best_idx = None
-    best_seg = None
-    best_dist = np.inf
-
-    for i, seg in enumerate(segments):
-        d = np.sqrt((seg[:, 0] - lon) ** 2 + (seg[:, 1] - lat) ** 2)
-        min_dist = float(d.min())
-        if min_dist < best_dist:
-            best_dist = min_dist
-            best_seg = seg
-            best_idx = i
-
-    if best_seg is None or best_dist > max_dist_deg:
-        return None, None, float(best_dist)
-    return best_idx, best_seg, float(best_dist)
-
-
 def extract_contour_segments(gph2d: xr.DataArray, levels: np.ndarray) -> dict[float, list[np.ndarray]]:
     fig, ax = plt.subplots(figsize=(3, 2))
     cs = ax.contour(
@@ -332,145 +157,109 @@ def _interp_gph_value(gph2d: xr.DataArray, lon: float, lat: float) -> float:
     return float(val.values)
 
 
-def _nearest_contour_anchor(
+def _km_per_deg_lon(lat: float) -> float:
+    return max(111.32 * np.cos(np.deg2rad(float(lat))), 1e-6)
+
+
+def _local_gph_gradient_east_north(
     gph2d: xr.DataArray,
-    levels: np.ndarray,
-    lon0: float,
-    lat0: float,
-) -> dict[str, Any] | None:
-    fig, ax = plt.subplots(figsize=(3, 2))
-    cs = ax.contour(
-        gph2d["longitude"].values,
-        gph2d["latitude"].values,
-        gph2d.values,
-        levels=levels,
-    )
-    plt.close(fig)
+    lon: float,
+    lat: float,
+    probe_deg: float = GRAD_PROBE_DEG,
+) -> np.ndarray:
+    lon = float(lon)
+    lat = float(lat)
+    h = float(probe_deg)
 
-    lon_scale = max(np.cos(np.deg2rad(lat0)), 1e-6)
-    best = None
+    g_lon_plus = _interp_gph_value(gph2d, lon + h, lat)
+    g_lon_minus = _interp_gph_value(gph2d, lon - h, lat)
+    g_lat_plus = _interp_gph_value(gph2d, lon, lat + h)
+    g_lat_minus = _interp_gph_value(gph2d, lon, lat - h)
 
-    for level, segs in zip(cs.levels, cs.allsegs):
-        for seg in segs:
-            seg = np.asarray(seg, dtype=float)
-            if seg.shape[0] < 2:
-                continue
+    dgd_lon_deg = (g_lon_plus - g_lon_minus) / (2.0 * h)
+    dgd_lat_deg = (g_lat_plus - g_lat_minus) / (2.0 * h)
 
-            d = np.sqrt(((seg[:, 0] - lon0) * lon_scale) ** 2 + (seg[:, 1] - lat0) ** 2)
-            idx = int(np.argmin(d))
-            dist = float(d[idx])
+    dgd_east = dgd_lon_deg / _km_per_deg_lon(lat)
+    dgd_north = dgd_lat_deg / 111.32
 
-            if best is None or dist < best["distance"]:
-                best = {
-                    "level": float(level),
-                    "segment": seg,
-                    "idx": idx,
-                    "distance": dist,
-                }
-
-    if best is None:
-        return None
-
-    seg = best["segment"]
-    idx = best["idx"]
-
-    if idx == 0:
-        tangent = seg[1] - seg[0]
-    elif idx == seg.shape[0] - 1:
-        tangent = seg[-1] - seg[-2]
-    else:
-        tangent = seg[idx + 1] - seg[idx - 1]
-
-    tangent_xy = np.array([tangent[0] * lon_scale, tangent[1]], dtype=float)
-    tangent_norm = np.linalg.norm(tangent_xy)
-    if tangent_norm < 1e-12:
-        return None
-    tangent_xy /= tangent_norm
-
-    normal_xy = np.array([-tangent_xy[1], tangent_xy[0]], dtype=float)
-
-    normal_lon = normal_xy[0] / lon_scale
-    normal_lat = normal_xy[1]
-    normal_norm = np.sqrt((normal_lon * lon_scale) ** 2 + normal_lat**2)
-    if normal_norm < 1e-12:
-        return None
-
-    normal_lon /= normal_norm
-    normal_lat /= normal_norm
-
-    return {
-        "contour_level": best["level"],
-        "contour_point": seg[idx],
-        "normal": np.array([normal_lon, normal_lat], dtype=float),
-        "distance": best["distance"],
-    }
+    return np.array([float(dgd_east), float(dgd_north)], dtype=float)
 
 
-def _trace_monotonic_direction(
+def _trace_gradient_path(
     gph2d: xr.DataArray,
     lon0: float,
     lat0: float,
-    direction: np.ndarray,
     *,
     lon_min: float,
     lon_max: float,
     lat_min: float,
     lat_max: float,
-    prefer: str = "decrease",
-    step_deg: float = 0.20,
-    max_steps: int = 220,
-    tol: float = 1e-3,
+    prefer: str = "increase",
+    step_km: float = GRAD_STEP_KM,
+    probe_deg: float = GRAD_PROBE_DEG,
+    grad_min_mag: float = GRAD_MIN_MAG_M_PER_KM,
+    max_steps: int = GRAD_MAX_STEPS,
+    monotonic_tol: float = GRAD_MONOTONIC_TOL_M,
 ) -> dict[str, Any]:
     lon0 = float(lon0)
     lat0 = float(lat0)
-    dir_lon = float(direction[0])
-    dir_lat = float(direction[1])
 
     base_val = _interp_gph_value(gph2d, lon0, lat0)
     samples = [(lon0, lat0, base_val)]
     stop_reason = "max_steps"
-    final_idx = 0
 
-    for step in range(1, max_steps + 1):
-        lon = lon0 + dir_lon * step_deg * step
-        lat = lat0 + dir_lat * step_deg * step
+    for _ in range(max_steps):
+        curr_lon, curr_lat, curr_val = samples[-1]
 
-        if lon < lon_min or lon > lon_max or lat < lat_min or lat > lat_max:
+        grad = _local_gph_gradient_east_north(
+            gph2d,
+            curr_lon,
+            curr_lat,
+            probe_deg=probe_deg,
+        )
+        grad_mag = float(np.linalg.norm(grad))
+
+        if not np.isfinite(grad_mag) or grad_mag < float(grad_min_mag):
+            stop_reason = "gradient_too_small"
+            break
+
+        step_dir = grad / grad_mag
+        if prefer == "decrease":
+            step_dir = -step_dir
+
+        d_east_km = float(step_dir[0]) * float(step_km)
+        d_north_km = float(step_dir[1]) * float(step_km)
+
+        next_lon = curr_lon + d_east_km / _km_per_deg_lon(curr_lat)
+        next_lat = curr_lat + d_north_km / 111.32
+
+        if (
+            next_lon < lon_min
+            or next_lon > lon_max
+            or next_lat < lat_min
+            or next_lat > lat_max
+        ):
             stop_reason = "domain_edge"
             break
 
-        val = _interp_gph_value(gph2d, lon, lat)
-        if not np.isfinite(val):
+        next_val = _interp_gph_value(gph2d, next_lon, next_lat)
+        if not np.isfinite(next_val):
             stop_reason = "nan"
             break
 
-        samples.append((float(lon), float(lat), float(val)))
-
-        if len(samples) < 3:
-            final_idx = len(samples) - 1
-            continue
-
-        prev_val = samples[-2][2]
-        curr_val = samples[-1][2]
-
         if prefer == "decrease":
-            if curr_val > prev_val + tol:
-                final_idx = len(samples) - 2
-                stop_reason = "reversed_to_increase"
+            if not (next_val < curr_val - monotonic_tol):
+                stop_reason = "cannot_decrease"
                 break
-            final_idx = len(samples) - 1
         else:
-            if curr_val < prev_val - tol:
-                final_idx = len(samples) - 2
-                stop_reason = "reversed_to_decrease"
+            if not (next_val > curr_val + monotonic_tol):
+                stop_reason = "cannot_increase"
                 break
-            final_idx = len(samples) - 1
 
-    if final_idx <= 0:
-        final_idx = len(samples) - 1
+        samples.append((float(next_lon), float(next_lat), float(next_val)))
 
-    line = np.asarray([(p[0], p[1]) for p in samples[: final_idx + 1]], dtype=float)
-    final_lon, final_lat, final_val = samples[final_idx]
+    line = np.asarray([(p[0], p[1]) for p in samples], dtype=float)
+    final_lon, final_lat, final_val = samples[-1]
 
     return {
         "line": line,
@@ -478,29 +267,48 @@ def _trace_monotonic_direction(
         "final_lat": float(final_lat),
         "final_value": float(final_val),
         "stop_reason": stop_reason,
+        "num_steps": int(len(samples) - 1),
     }
 
 
-def _nearest_level(levels: np.ndarray, value: float) -> float:
-    levels = np.asarray(levels, dtype=float)
-    if levels.size == 0 or not np.isfinite(value):
-        return np.nan
-    return float(levels[np.argmin(np.abs(levels - float(value)))])
-
-
-def _contour_segments_for_level(
+def _nearest_contour_segment_to_point_from_dict(
     contour_dict: dict[float, list[np.ndarray]],
-    level_m: float,
-    tol: float = 1e-6,
-) -> list[np.ndarray]:
-    if not np.isfinite(level_m):
-        return []
-    if float(level_m) in contour_dict:
-        return contour_dict[float(level_m)]
-    for lev, segs in contour_dict.items():
-        if abs(float(lev) - float(level_m)) <= tol:
-            return segs
-    return []
+    lon_ref: float,
+    lat_ref: float,
+    max_dist_deg: float = np.inf,
+) -> dict[str, Any] | None:
+    lon_ref = float(lon_ref)
+    lat_ref = float(lat_ref)
+    lon_scale = max(np.cos(np.deg2rad(lat_ref)), 1e-6)
+
+    best: dict[str, Any] | None = None
+    best_dist = np.inf
+
+    for level, segs in contour_dict.items():
+        for seg_idx, seg in enumerate(segs):
+            seg = np.asarray(seg, dtype=float)
+            if seg.shape[0] < 2:
+                continue
+
+            d = np.sqrt(((seg[:, 0] - lon_ref) * lon_scale) ** 2 + (seg[:, 1] - lat_ref) ** 2)
+            idx = int(np.argmin(d))
+            dist = float(d[idx])
+
+            if dist < best_dist:
+                best_dist = dist
+                best = {
+                    "level": float(level),
+                    "segment_index": int(seg_idx),
+                    "segment": seg,
+                    "nearest_point": seg[idx],
+                    "distance": dist,
+                }
+
+    if best is None:
+        return None
+    if float(best["distance"]) > float(max_dist_deg):
+        return None
+    return best
 
 
 def _is_closed_contour(segment: np.ndarray, tol: float = 1e-3) -> bool:
@@ -510,31 +318,23 @@ def _is_closed_contour(segment: np.ndarray, tol: float = 1e-3) -> bool:
 
 
 def _final_contour_for_branch(
-    contour_dict: dict[float, list[np.ndarray]],
-    level_m: float,
-    final_lon: float,
-    final_lat: float,
+    contour_match: dict[str, Any] | None,
     branch: str,
 ) -> dict[str, Any] | None:
-    segs = _contour_segments_for_level(contour_dict, level_m)
-    if not segs:
+    if contour_match is None:
         return None
 
-    seg_idx, seg, min_dist = _nearest_segment_with_idx(
-        segs,
-        float(final_lon),
-        float(final_lat),
-        max_dist_deg=360.0,
-    )
-    if seg is None or seg_idx is None:
+    seg = np.asarray(contour_match["segment"], dtype=float)
+    if seg.shape[0] < 2:
         return None
 
+    level_m = float(contour_match["level"])
     return {
         "branch": branch,
-        "level_m": round(float(level_m), 3),
-        "gph_m": round(float(level_m), 3),
-        "segment_index": int(seg_idx),
-        "min_distance_deg": round(float(min_dist), 4),
+        "level_m": round(level_m, 3),
+        "gph_m": round(level_m, 3),
+        "segment_index": int(contour_match["segment_index"]),
+        "min_distance_deg": round(float(contour_match["distance"]), 4),
         "is_closed": _is_closed_contour(seg),
         "points": _round_point_pairs(seg, ndigits=4),
     }
@@ -560,6 +360,273 @@ def _round_point_pairs(arr: np.ndarray, ndigits: int = 4) -> list[list[float]]:
     for lon, lat in arr:
         out.append([round(float(lon), ndigits), round(float(lat), ndigits)])
     return out
+
+
+def _wrap_lon_near(lon: float, ref_lon: float) -> float:
+    return float(ref_lon + ((float(lon) - float(ref_lon) + 180.0) % 360.0 - 180.0))
+
+
+def _polygon_signed_area(poly: np.ndarray) -> float:
+    if poly.shape[0] < 3:
+        return 0.0
+    x = poly[:, 0]
+    y = poly[:, 1]
+    return 0.5 * float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+
+
+def _ensure_ccw(poly: np.ndarray) -> np.ndarray:
+    arr = np.asarray(poly, dtype=float)
+    if arr.shape[0] < 3:
+        return arr
+    return arr if _polygon_signed_area(arr) >= 0.0 else arr[::-1].copy()
+
+
+def _clip_line_segment_to_convex_polygon(
+    p0: np.ndarray,
+    p1: np.ndarray,
+    polygon_ccw: np.ndarray,
+    eps: float = 1e-9,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    d = p1 - p0
+    t_enter = 0.0
+    t_exit = 1.0
+    m = int(polygon_ccw.shape[0])
+    if m < 3:
+        return None
+
+    for i in range(m):
+        vi = polygon_ccw[i]
+        vj = polygon_ccw[(i + 1) % m]
+        edge = vj - vi
+        # Inward normal for a CCW polygon edge.
+        n_in = np.array([-edge[1], edge[0]], dtype=float)
+
+        num = -float(np.dot(n_in, p0 - vi))
+        den = float(np.dot(n_in, d))
+
+        if abs(den) <= eps:
+            if num < -eps:
+                return None
+            continue
+
+        t = num / den
+        if den > 0.0:
+            t_enter = max(t_enter, t)
+        else:
+            t_exit = min(t_exit, t)
+
+        if t_enter > t_exit + eps:
+            return None
+
+    t0 = max(t_enter, 0.0)
+    t1 = min(t_exit, 1.0)
+    if t1 - t0 <= eps:
+        return None
+
+    q0 = p0 + t0 * d
+    q1 = p0 + t1 * d
+    return np.asarray(q0, dtype=float), np.asarray(q1, dtype=float)
+
+
+def _clip_polyline_to_convex_polygon(
+    line_xy: np.ndarray,
+    polygon_ccw: np.ndarray,
+    eps: float = 1e-9,
+    join_tol: float = 1e-7,
+) -> list[np.ndarray]:
+    line_xy = np.asarray(line_xy, dtype=float)
+    if line_xy.shape[0] < 2:
+        return []
+
+    pieces: list[np.ndarray] = []
+    current: list[np.ndarray] = []
+
+    for i in range(line_xy.shape[0] - 1):
+        p0 = line_xy[i]
+        p1 = line_xy[i + 1]
+        clipped = _clip_line_segment_to_convex_polygon(p0, p1, polygon_ccw, eps=eps)
+
+        if clipped is None:
+            if len(current) >= 2:
+                pieces.append(np.asarray(current, dtype=float))
+            current = []
+            continue
+
+        c0, c1 = clipped
+        if not current:
+            current = [c0, c1]
+            continue
+
+        if float(np.linalg.norm(current[-1] - c0)) <= join_tol:
+            if float(np.linalg.norm(current[-1] - c1)) > join_tol:
+                current.append(c1)
+        else:
+            if len(current) >= 2:
+                pieces.append(np.asarray(current, dtype=float))
+            current = [c0, c1]
+
+    if len(current) >= 2:
+        pieces.append(np.asarray(current, dtype=float))
+
+    cleaned: list[np.ndarray] = []
+    for piece in pieces:
+        if piece.shape[0] < 2:
+            continue
+
+        dedup = [piece[0]]
+        for pt in piece[1:]:
+            if float(np.linalg.norm(pt - dedup[-1])) > join_tol:
+                dedup.append(pt)
+
+        if len(dedup) >= 2:
+            cleaned.append(np.asarray(dedup, dtype=float))
+
+    return cleaned
+
+
+def _build_oriented_clip_rectangle(
+    lon0: float,
+    lat0: float,
+    end_a_lonlat: np.ndarray,
+    end_b_lonlat: np.ndarray,
+    min_half_short: float = 1e-6,
+) -> dict[str, Any] | None:
+    center = np.array([float(lon0), float(lat0)], dtype=float)
+    end_a = np.asarray(end_a_lonlat, dtype=float).copy()
+    end_b = np.asarray(end_b_lonlat, dtype=float).copy()
+
+    lon_ref = float(center[0])
+    lon_scale = max(np.cos(np.deg2rad(center[1])), 1e-6)
+
+    end_a[0] = _wrap_lon_near(end_a[0], lon_ref)
+    end_b[0] = _wrap_lon_near(end_b[0], lon_ref)
+
+    def to_xy(lonlat: np.ndarray) -> np.ndarray:
+        lonlat = np.asarray(lonlat, dtype=float)
+        return np.array([lonlat[0] * lon_scale, lonlat[1]], dtype=float)
+
+    def to_lonlat(xy: np.ndarray) -> np.ndarray:
+        xy = np.asarray(xy, dtype=float)
+        return np.array([float(xy[0] / lon_scale) % 360.0, float(xy[1])], dtype=float)
+
+    center_xy = to_xy(center)
+    a_xy = to_xy(end_a)
+    b_xy = to_xy(end_b)
+
+    long_vec = b_xy - a_xy
+    long_len = float(np.linalg.norm(long_vec))
+    if not np.isfinite(long_len) or long_len < 1e-10:
+        return None
+
+    long_hat = long_vec / long_len
+    short_hat = np.array([-long_hat[1], long_hat[0]], dtype=float)
+
+    proj_a = float(np.dot(a_xy - center_xy, short_hat))
+    proj_b = float(np.dot(b_xy - center_xy, short_hat))
+
+    dominant_proj = proj_a if abs(proj_a) >= abs(proj_b) else proj_b
+    if dominant_proj < 0.0:
+        short_hat = -short_hat
+        proj_a = -proj_a
+        proj_b = -proj_b
+
+    max_perp = max(abs(proj_a), abs(proj_b), float(min_half_short))
+    short_length = max(float(long_len), 2.0 * max_perp)
+    half_short = 0.5 * short_length
+
+    top_offset = +half_short
+    bottom_offset = -half_short
+
+    a_top_xy = a_xy + (top_offset - proj_a) * short_hat
+    b_top_xy = b_xy + (top_offset - proj_b) * short_hat
+    b_bottom_xy = b_xy + (bottom_offset - proj_b) * short_hat
+    a_bottom_xy = a_xy + (bottom_offset - proj_a) * short_hat
+
+    corners_xy = np.vstack([a_top_xy, b_top_xy, b_bottom_xy, a_bottom_xy])
+    corners = np.vstack([to_lonlat(c) for c in corners_xy])
+
+    return {
+        "corners": corners,
+        "corners_xy": corners_xy,
+        "lon_ref": lon_ref,
+        "lon_scale": float(lon_scale),
+        "long_length": float(long_len),
+        "short_length": float(short_length),
+    }
+
+
+def _min_distance_deg_to_polyline(line_lonlat: np.ndarray, lon_ref: float, lat_ref: float) -> float:
+    line_lonlat = np.asarray(line_lonlat, dtype=float)
+    if line_lonlat.shape[0] == 0:
+        return float("inf")
+
+    lon_ref = float(lon_ref)
+    lat_ref = float(lat_ref)
+    lon_scale = max(np.cos(np.deg2rad(lat_ref)), 1e-6)
+    lons_local = np.array([_wrap_lon_near(lon, lon_ref) for lon in line_lonlat[:, 0]], dtype=float)
+    d = np.sqrt(((lons_local - lon_ref) * lon_scale) ** 2 + (line_lonlat[:, 1] - lat_ref) ** 2)
+    return float(np.nanmin(d))
+
+
+def _clip_contours_to_rectangle(
+    contour_dict: dict[float, list[np.ndarray]],
+    clip_rect: dict[str, Any],
+    lon_ref: float,
+    lat_ref: float,
+) -> list[dict[str, Any]]:
+    lon_ref = float(lon_ref)
+    lat_ref = float(lat_ref)
+    rect_lon_ref = float(clip_rect["lon_ref"])
+    lon_scale = float(clip_rect["lon_scale"])
+    polygon_xy = _ensure_ccw(np.asarray(clip_rect["corners_xy"], dtype=float))
+
+    snippets: list[dict[str, Any]] = []
+
+    for level in sorted(contour_dict.keys()):
+        segs = contour_dict[level]
+        for seg_idx, seg in enumerate(segs):
+            seg = np.asarray(seg, dtype=float)
+            if seg.shape[0] < 2:
+                continue
+
+            seg_xy = np.column_stack(
+                [
+                    np.array([_wrap_lon_near(lon, rect_lon_ref) * lon_scale for lon in seg[:, 0]]),
+                    seg[:, 1],
+                ]
+            )
+            clipped_pieces_xy = _clip_polyline_to_convex_polygon(seg_xy, polygon_xy)
+            if not clipped_pieces_xy:
+                continue
+
+            for piece_idx, piece_xy in enumerate(clipped_pieces_xy):
+                if piece_xy.shape[0] < 2:
+                    continue
+
+                piece_lonlat = np.column_stack(
+                    [
+                        (piece_xy[:, 0] / lon_scale) % 360.0,
+                        piece_xy[:, 1],
+                    ]
+                )
+                if piece_lonlat.shape[0] < 2:
+                    continue
+
+                snippets.append(
+                    {
+                        "level_m": round(float(level), 3),
+                        "gph_m": round(float(level), 3),
+                        "segment_index": int(seg_idx),
+                        "piece_index": int(piece_idx),
+                        "min_distance_deg": round(
+                            _min_distance_deg_to_polyline(piece_lonlat, lon_ref=lon_ref, lat_ref=lat_ref),
+                            4,
+                        ),
+                        "points": _round_point_pairs(piece_lonlat, ndigits=4),
+                    }
+                )
+
+    return snippets
 
 
 def build_export_payload(
@@ -656,10 +723,18 @@ def build_export_payload(
 
     contour_time_min = np.datetime64(trajectory_samples["valid_time"].min()) - time_pad
     contour_time_max = np.datetime64(trajectory_samples["valid_time"].max()) + time_pad
-    contour_lat_min = max(-90.0, float(trajectory_samples["latitude"].min()) - contour_lat_pad)
-    contour_lat_max = min(90.0, float(trajectory_samples["latitude"].max()) + contour_lat_pad)
-    contour_lon_min = max(0.0, float(trajectory_samples["longitude_360"].min()) - contour_lon_pad)
-    contour_lon_max = min(359.75, float(trajectory_samples["longitude_360"].max()) + contour_lon_pad)
+    dataset_lats = np.asarray(era5_ds["latitude"].values, dtype=float)
+    dataset_lons = np.asarray(era5_ds["longitude"].values, dtype=float)
+    contour_lat_min = max(
+        float(np.nanmin(dataset_lats)),
+        min(
+            GRAD_TRACE_SOUTH_LAT_MIN,
+            float(trajectory_samples["latitude"].min()) - contour_lat_pad,
+        ),
+    )
+    contour_lat_max = float(np.nanmax(dataset_lats))
+    contour_lon_min = float(np.nanmin(dataset_lons))
+    contour_lon_max = float(np.nanmax(dataset_lons))
 
     gph_hourly_925_m = (
         era5_ds["z"]
@@ -687,10 +762,10 @@ def build_export_payload(
     contour_by_hour: dict[int, list[dict[str, Any]]] = {}
     final_extrema_contours_by_hour: dict[int, dict[str, Any]] = {}
 
-    for idx, row in tqdm(
+    for _, row in tqdm(
         selected_points.iterrows(),
         total=len(selected_points),
-        desc="Clipping local contour snippets",
+        desc="Tracing gradient contours",
         unit="point",
     ):
         step_hour = int(row["step_hour"])
@@ -703,169 +778,74 @@ def build_export_payload(
             )
             continue
 
-        local_gph = gph_hourly_925_m.interp(
-            valid_time=np.datetime64(t_key),
-            latitude=float(row["latitude"]),
-            longitude=float(row["longitude_360"]),
-            kwargs={"bounds_error": False, "fill_value": None},
-        )
-        local_gph_val = float(local_gph.values)
-        nearby_levels = _bracketing_levels(contour_levels, local_gph_val)
-        halfplanes = _halfplanes_for_selected_point(selected_points, idx)
-
-        snippets: list[dict[str, Any]] = []
-        for lev in nearby_levels:
-            segs = contour_dict.get(float(lev), [])
-            if not segs:
-                continue
-
-            seg_idx, seg, min_dist = _nearest_segment_with_idx(
-                segs,
-                float(row["longitude_360"]),
-                float(row["latitude"]),
-                max_dist_deg=max_contour_distance_deg,
-            )
-            if seg is None:
-                continue
-
-            clipped_pieces = _clip_polyline_to_point_cell(seg, halfplanes)
-            clipped_seg = _nearest_piece_to_point(
-                clipped_pieces,
-                float(row["longitude_360"]),
-                float(row["latitude"]),
-            )
-            if clipped_seg is None:
-                continue
-
-            snippets.append(
-                {
-                    "level_m": round(float(lev), 3),
-                    "segment_index": int(seg_idx),
-                    "min_distance_deg": round(float(min_dist), 4),
-                    "points": _round_point_pairs(clipped_seg, ndigits=4),
-                }
-            )
-
-        contour_by_hour[step_hour] = snippets
-
         gph_frame = gph_hourly_925_m.sel(valid_time=np.datetime64(t_key))
         lon0 = float(row["longitude_360"])
         lat0 = float(row["latitude"])
+        frame_lon_min = float(np.nanmin(np.asarray(gph_frame["longitude"].values, dtype=float)))
+        frame_lon_max = float(np.nanmax(np.asarray(gph_frame["longitude"].values, dtype=float)))
+        frame_lat_min = float(np.nanmin(np.asarray(gph_frame["latitude"].values, dtype=float)))
+        frame_lat_max = float(np.nanmax(np.asarray(gph_frame["latitude"].values, dtype=float)))
 
-        anchor = _nearest_contour_anchor(gph_frame, contour_levels, lon0, lat0)
-        if anchor is None:
-            final_extrema_contours_by_hour[step_hour] = _empty_final_extrema_contours(
-                "none exist"
-            )
-            continue
-
-        gph_frame_full = (
-            era5_ds["z"]
-            .sel(
-                pressure_level=pressure_level,
-                valid_time=np.datetime64(t_key),
-            )
-            / G0
-        ).load()
-        full_lon_min = float(np.nanmin(np.asarray(gph_frame_full["longitude"].values, dtype=float)))
-        full_lon_max = float(np.nanmax(np.asarray(gph_frame_full["longitude"].values, dtype=float)))
-        full_lat_min = float(np.nanmin(np.asarray(gph_frame_full["latitude"].values, dtype=float)))
-        full_lat_max = float(np.nanmax(np.asarray(gph_frame_full["latitude"].values, dtype=float)))
-
-        base_val = _interp_gph_value(gph_frame, lon0, lat0)
-        normal = np.asarray(anchor["normal"], dtype=float)
-        step_check = 0.20
-
-        plus_probe = _interp_gph_value(
+        dec_trace = _trace_gradient_path(
             gph_frame,
-            lon0 + normal[0] * step_check,
-            lat0 + normal[1] * step_check,
-        )
-        minus_probe = _interp_gph_value(
-            gph_frame,
-            lon0 - normal[0] * step_check,
-            lat0 - normal[1] * step_check,
-        )
-
-        d_plus = plus_probe - base_val
-        d_minus = minus_probe - base_val
-        tol_first = 1e-3
-
-        if d_plus < -tol_first and d_minus > tol_first:
-            dec_dir = normal
-            inc_dir = -normal
-        elif d_minus < -tol_first and d_plus > tol_first:
-            dec_dir = -normal
-            inc_dir = normal
-        else:
-            if d_plus <= d_minus:
-                dec_dir = normal
-                inc_dir = -normal
-            else:
-                dec_dir = -normal
-                inc_dir = normal
-
-        dec_trace = _trace_monotonic_direction(
-            gph_frame_full,
             lon0,
             lat0,
-            dec_dir,
-            lon_min=full_lon_min,
-            lon_max=full_lon_max,
-            lat_min=full_lat_min,
-            lat_max=full_lat_max,
+            lon_min=frame_lon_min,
+            lon_max=frame_lon_max,
+            lat_min=frame_lat_min,
+            lat_max=frame_lat_max,
             prefer="decrease",
-            step_deg=0.20,
-            max_steps=220,
-            tol=1e-3,
+            step_km=GRAD_STEP_KM,
+            probe_deg=GRAD_PROBE_DEG,
+            grad_min_mag=GRAD_MIN_MAG_M_PER_KM,
+            max_steps=GRAD_MAX_STEPS,
+            monotonic_tol=GRAD_MONOTONIC_TOL_M,
         )
-        inc_trace = _trace_monotonic_direction(
-            gph_frame_full,
+        inc_trace = _trace_gradient_path(
+            gph_frame,
             lon0,
             lat0,
-            inc_dir,
-            lon_min=full_lon_min,
-            lon_max=full_lon_max,
-            lat_min=full_lat_min,
-            lat_max=full_lat_max,
+            lon_min=frame_lon_min,
+            lon_max=frame_lon_max,
+            lat_min=frame_lat_min,
+            lat_max=frame_lat_max,
             prefer="increase",
-            step_deg=0.20,
-            max_steps=220,
-            tol=1e-3,
+            step_km=GRAD_STEP_KM,
+            probe_deg=GRAD_PROBE_DEG,
+            grad_min_mag=GRAD_MIN_MAG_M_PER_KM,
+            max_steps=GRAD_MAX_STEPS,
+            monotonic_tol=GRAD_MONOTONIC_TOL_M,
         )
 
-        dec_level = _nearest_level(contour_levels, dec_trace["final_value"])
-        inc_level = _nearest_level(contour_levels, inc_trace["final_value"])
-        full_levels = np.asarray(
-            sorted(
-                {
-                    float(lv)
-                    for lv in [dec_level, inc_level]
-                    if np.isfinite(float(lv))
-                }
-            ),
-            dtype=float,
-        )
-        full_contour_dict = (
-            extract_contour_segments(gph_frame_full, full_levels)
-            if full_levels.size
-            else {}
-        )
+        long_end_a = np.array([dec_trace["final_lon"], dec_trace["final_lat"]], dtype=float)
+        long_end_b = np.array([inc_trace["final_lon"], inc_trace["final_lat"]], dtype=float)
+        clip_rect = _build_oriented_clip_rectangle(lon0, lat0, long_end_a, long_end_b)
 
-        dec_contour = _final_contour_for_branch(
-            full_contour_dict,
-            dec_level,
+        if clip_rect is None:
+            contour_by_hour[step_hour] = []
+        else:
+            contour_by_hour[step_hour] = _clip_contours_to_rectangle(
+                contour_dict,
+                clip_rect,
+                lon_ref=lon0,
+                lat_ref=lat0,
+            )
+
+        dec_extrema_match = _nearest_contour_segment_to_point_from_dict(
+            contour_dict,
             dec_trace["final_lon"],
             dec_trace["final_lat"],
-            "decreasing",
+            max_dist_deg=360.0,
         )
-        inc_contour = _final_contour_for_branch(
-            full_contour_dict,
-            inc_level,
+        inc_extrema_match = _nearest_contour_segment_to_point_from_dict(
+            contour_dict,
             inc_trace["final_lon"],
             inc_trace["final_lat"],
-            "increasing",
+            max_dist_deg=360.0,
         )
+
+        dec_contour = _final_contour_for_branch(dec_extrema_match, "decreasing")
+        inc_contour = _final_contour_for_branch(inc_extrema_match, "increasing")
 
         available = [c for c in [dec_contour, inc_contour] if c is not None]
         if not available:
@@ -981,7 +961,7 @@ def build_export_payload(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Export backward trajectory diagnostics + nearby contour snippets to a static JSON "
+            "Export backward trajectory diagnostics + rectangle-clipped contour segments to a static JSON "
             "for a non-time-dependent frontend layer."
         )
     )
