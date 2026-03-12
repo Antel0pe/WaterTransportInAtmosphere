@@ -24,6 +24,9 @@ GRAD_MIN_MAG_M_PER_KM = 0.02
 GRAD_MAX_STEPS = 220
 GRAD_MONOTONIC_TOL_M = 1e-3
 GRAD_TRACE_SOUTH_LAT_MIN = 23.0
+GHOST_FORWARD_HOURS = 12
+GHOST_SUBSTEPS_PER_HOUR = 4
+EARTH_RADIUS_M = 6_371_000.0
 
 
 def _fmt_utc(ts: Any) -> str:
@@ -49,7 +52,7 @@ def backward_integrate_trajectory_uv(
     pressure_level: int = 925,
     hours_back: int = 72,
     substeps: int = 4,
-    earth_radius_m: float = 6_371_000.0,
+    earth_radius_m: float = EARTH_RADIUS_M,
 ) -> pd.DataFrame:
     """Backward trajectory using ERA5 u/v winds."""
     if substeps < 1:
@@ -311,6 +314,140 @@ def _nearest_contour_segment_to_point_from_dict(
     return best
 
 
+def _nearest_segment_tangent_unit_from_dict(
+    contour_dict: dict[float, list[np.ndarray]],
+    lon_ref: float,
+    lat_ref: float,
+) -> dict[str, Any] | None:
+    if not contour_dict:
+        return None
+
+    lon_ref = float(lon_ref)
+    lat_ref = float(lat_ref)
+    lon_scale = max(np.cos(np.deg2rad(lat_ref)), 1e-6)
+    best: dict[str, Any] | None = None
+
+    for level, segs in contour_dict.items():
+        for seg in segs:
+            seg = np.asarray(seg, dtype=float)
+            if seg.ndim != 2 or seg.shape[0] < 2:
+                continue
+
+            lon_seg = lon_ref + ((seg[:, 0] - lon_ref + 180.0) % 360.0 - 180.0)
+            lat_seg = seg[:, 1]
+            x = (lon_seg - lon_ref) * lon_scale
+            y = lat_seg - lat_ref
+
+            x0 = x[:-1]
+            y0 = y[:-1]
+            x1 = x[1:]
+            y1 = y[1:]
+            dx = x1 - x0
+            dy = y1 - y0
+
+            seg_len2 = dx * dx + dy * dy
+            valid = seg_len2 > 1e-14
+            if not np.any(valid):
+                continue
+
+            t = np.zeros_like(seg_len2)
+            t[valid] = np.clip(
+                ((-x0[valid]) * dx[valid] + (-y0[valid]) * dy[valid]) / seg_len2[valid],
+                0.0,
+                1.0,
+            )
+            cx = x0 + t * dx
+            cy = y0 + t * dy
+            dist2 = cx * cx + cy * cy
+            dist2 = np.where(valid, dist2, np.inf)
+
+            idx = int(np.argmin(dist2))
+            if not np.isfinite(dist2[idx]):
+                continue
+
+            tan_x = float(dx[idx])
+            tan_y = float(dy[idx])
+            tan_norm = float(np.hypot(tan_x, tan_y))
+            if tan_norm < 1e-12:
+                continue
+
+            tangent_unit = np.array([tan_x / tan_norm, tan_y / tan_norm], dtype=float)
+            dist = float(np.sqrt(dist2[idx]))
+
+            if best is None or dist < best["distance"]:
+                best = {
+                    "distance": dist,
+                    "tangent_unit": tangent_unit,
+                    "level": float(level),
+                }
+
+    return best
+
+
+def _forward_advect_contour_parallel_speed(
+    uv_at_hour: xr.Dataset,
+    contour_dict: dict[float, list[np.ndarray]],
+    lon0: float,
+    lat0: float,
+    hours: int = GHOST_FORWARD_HOURS,
+    substeps: int = GHOST_SUBSTEPS_PER_HOUR,
+    earth_radius_m: float = EARTH_RADIUS_M,
+) -> np.ndarray:
+    if substeps < 1:
+        raise ValueError("substeps must be >= 1")
+
+    lon = float(lon0) % 360.0
+    lat = float(np.clip(lat0, -89.75, 89.75))
+    dt_sub_s = 3600.0 / float(substeps)
+    ghost_points: list[tuple[float, float]] = []
+
+    for _ in range(int(hours)):
+        lon_step = lon
+        lat_step = lat
+
+        for _ in range(int(substeps)):
+            uv = uv_at_hour.interp(
+                latitude=lat_step,
+                longitude=lon_step,
+                kwargs={"fill_value": "extrapolate"},
+            )
+            u_ms = float(uv["u"].values)
+            v_ms = float(uv["v"].values)
+            speed_ms = float(np.hypot(u_ms, v_ms))
+            if speed_ms < 1e-12:
+                continue
+
+            tangent = _nearest_segment_tangent_unit_from_dict(
+                contour_dict,
+                lon_step,
+                lat_step,
+            )
+            if tangent is None:
+                dir_east = float(u_ms / speed_ms)
+                dir_north = float(v_ms / speed_ms)
+            else:
+                dir_east = float(tangent["tangent_unit"][0])
+                dir_north = float(tangent["tangent_unit"][1])
+                if u_ms * dir_east + v_ms * dir_north < 0.0:
+                    dir_east = -dir_east
+                    dir_north = -dir_north
+
+            d_east_m = speed_ms * dir_east * dt_sub_s
+            d_north_m = speed_ms * dir_north * dt_sub_s
+            dlat_deg = np.degrees(d_north_m / earth_radius_m)
+            coslat = max(np.cos(np.radians(lat_step)), 1e-6)
+            dlon_deg = np.degrees(d_east_m / (earth_radius_m * coslat))
+
+            lat_step = float(np.clip(lat_step + dlat_deg, -89.75, 89.75))
+            lon_step = float((lon_step + dlon_deg) % 360.0)
+
+        lon = lon_step
+        lat = lat_step
+        ghost_points.append((lon, lat))
+
+    return np.asarray(ghost_points, dtype=float)
+
+
 def _is_closed_contour(segment: np.ndarray, tol: float = 1e-3) -> bool:
     if segment.shape[0] < 3:
         return False
@@ -366,6 +503,19 @@ def _wrap_lon_near(lon: float, ref_lon: float) -> float:
     return float(ref_lon + ((float(lon) - float(ref_lon) + 180.0) % 360.0 - 180.0))
 
 
+def _unwrap_lon_polyline_near_ref(lons: np.ndarray, ref_lon: float) -> np.ndarray:
+    arr = np.asarray(lons, dtype=float)
+    if arr.size == 0:
+        return arr.copy()
+
+    # Preserve polyline continuity first, then shift by whole turns so the line
+    # sits near the local clipping/reference longitude.
+    unwrapped = np.rad2deg(np.unwrap(np.deg2rad(arr), discont=np.deg2rad(180.0)))
+    center = 0.5 * float(np.nanmin(unwrapped) + np.nanmax(unwrapped))
+    turn = 360.0 * np.round((float(ref_lon) - center) / 360.0)
+    return unwrapped + turn
+
+
 def _polygon_signed_area(poly: np.ndarray) -> float:
     if poly.shape[0] < 3:
         return 0.0
@@ -405,7 +555,9 @@ def _clip_line_segment_to_convex_polygon(
         den = float(np.dot(n_in, d))
 
         if abs(den) <= eps:
-            if num < -eps:
+            # For parallel segments, reject only if the segment lies outside
+            # the inward half-space for this edge.
+            if num > eps:
                 return None
             continue
 
@@ -589,9 +741,10 @@ def _clip_contours_to_rectangle(
             if seg.shape[0] < 2:
                 continue
 
+            seg_lon_local = _unwrap_lon_polyline_near_ref(seg[:, 0], rect_lon_ref)
             seg_xy = np.column_stack(
                 [
-                    np.array([_wrap_lon_near(lon, rect_lon_ref) * lon_scale for lon in seg[:, 0]]),
+                    seg_lon_local * lon_scale,
                     seg[:, 1],
                 ]
             )
@@ -605,7 +758,7 @@ def _clip_contours_to_rectangle(
 
                 piece_lonlat = np.column_stack(
                     [
-                        (piece_xy[:, 0] / lon_scale) % 360.0,
+                        _unwrap_lon_polyline_near_ref(piece_xy[:, 0] / lon_scale, lon_ref),
                         piece_xy[:, 1],
                     ]
                 )
@@ -746,6 +899,15 @@ def build_export_payload(
         )
         / G0
     ).load()
+    uv_hourly_925 = (
+        era5_ds[["u", "v"]]
+        .sel(
+            pressure_level=pressure_level,
+            valid_time=slice(contour_time_min, contour_time_max),
+            latitude=_lat_slice_for_dataset(era5_ds, contour_lat_min, contour_lat_max),
+            longitude=slice(contour_lon_min, contour_lon_max),
+        )
+    ).load()
 
     gph_hourly_contours: dict[pd.Timestamp, dict[float, list[np.ndarray]]] = {}
     for frame_time in tqdm(
@@ -761,6 +923,7 @@ def build_export_payload(
     selected_points = trajectory_samples.copy().sort_values("valid_time").reset_index(drop=True)
     contour_by_hour: dict[int, list[dict[str, Any]]] = {}
     final_extrema_contours_by_hour: dict[int, dict[str, Any]] = {}
+    ghost_forward_advected_cells_by_hour: dict[int, list[dict[str, Any]]] = {}
 
     for _, row in tqdm(
         selected_points.iterrows(),
@@ -776,11 +939,36 @@ def build_export_payload(
             final_extrema_contours_by_hour[step_hour] = _empty_final_extrema_contours(
                 "none exist"
             )
+            ghost_forward_advected_cells_by_hour[step_hour] = []
             continue
 
         gph_frame = gph_hourly_925_m.sel(valid_time=np.datetime64(t_key))
         lon0 = float(row["longitude_360"])
         lat0 = float(row["latitude"])
+        try:
+            uv_frame = uv_hourly_925.sel(valid_time=np.datetime64(t_key))
+        except Exception:
+            uv_frame = uv_hourly_925.sel(valid_time=np.datetime64(t_key), method="nearest")
+
+        ghost_points = _forward_advect_contour_parallel_speed(
+            uv_frame,
+            contour_dict,
+            lon0,
+            lat0,
+            hours=GHOST_FORWARD_HOURS,
+            substeps=GHOST_SUBSTEPS_PER_HOUR,
+            earth_radius_m=EARTH_RADIUS_M,
+        )
+        ghost_forward_advected_cells_by_hour[step_hour] = [
+            {
+                "forward_hour": int(idx + 1),
+                "latitude": round(float(ghost_lat), 5),
+                "longitude": round(float(ghost_lon), 5),
+                "longitude_360": round(float(ghost_lon) % 360.0, 5),
+            }
+            for idx, (ghost_lon, ghost_lat) in enumerate(ghost_points)
+        ]
+
         frame_lon_min = float(np.nanmin(np.asarray(gph_frame["longitude"].values, dtype=float)))
         frame_lon_max = float(np.nanmax(np.asarray(gph_frame["longitude"].values, dtype=float)))
         frame_lat_min = float(np.nanmin(np.asarray(gph_frame["latitude"].values, dtype=float)))
@@ -890,6 +1078,9 @@ def build_export_payload(
                 "final_extrema_contours": final_extrema_contours_by_hour.get(
                     step_hour, _empty_final_extrema_contours("none exist")
                 ),
+                "ghost_forward_advected_cells": ghost_forward_advected_cells_by_hour.get(
+                    step_hour, []
+                ),
             }
         )
 
@@ -934,6 +1125,12 @@ def build_export_payload(
             "substeps": int(substeps),
             "contour_levels_m": [float(x) for x in contour_levels],
             "max_contour_distance_deg": float(max_contour_distance_deg),
+            "ghost_forward_hours": int(GHOST_FORWARD_HOURS),
+            "ghost_substeps_per_hour": int(GHOST_SUBSTEPS_PER_HOUR),
+            "ghost_advection_method": (
+                "direction from nearest contour tangent (aligned with local wind), "
+                "speed from local |u,v| at fixed frame hour"
+            ),
             "final_extrema_contour_scale_m": {
                 "min": contour_scale_min,
                 "mid": contour_scale_mid,

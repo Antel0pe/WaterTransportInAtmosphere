@@ -117,6 +117,28 @@ function setActiveContourSnippets(
   activeContourObjectsRef.current = next;
 }
 
+function setActiveGhostTrails(
+  enabled: boolean,
+  timestamp: string,
+  ghostObjectsByHourKey: Map<string, THREE.Object3D[]>,
+  activeGhostObjectsRef: { current: THREE.Object3D[] }
+) {
+  for (const obj of activeGhostObjectsRef.current) {
+    obj.visible = false;
+  }
+  activeGhostObjectsRef.current = [];
+
+  if (!enabled) return;
+
+  const next = ghostObjectsByHourKey.get(toHourlyKey(timestamp));
+  if (!next || next.length === 0) return;
+
+  for (const obj of next) {
+    obj.visible = true;
+  }
+  activeGhostObjectsRef.current = next;
+}
+
 function gphToExtremaColor(levelM: number, minM: number, maxM: number) {
   const t = norm(levelM, minM, maxM);
   const blue = new THREE.Color(0x205cff);
@@ -184,11 +206,42 @@ function buildContourFillMesh(
   return mesh;
 }
 
+function splitContourPolyline(
+  points: Array<[number, number]>,
+  maxStepDeg = 2.0
+): Array<Array<[number, number]>> {
+  if (!points || points.length < 2) return [];
+
+  const pieces: Array<Array<[number, number]>> = [];
+  let current: Array<[number, number]> = [points[0]];
+
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1];
+    const next = points[i];
+
+    let dLon = Math.abs(Number(next[0]) - Number(prev[0]));
+    if (dLon > 180) dLon = 360 - dLon;
+    const dLat = Math.abs(Number(next[1]) - Number(prev[1]));
+
+    if (dLon > maxStepDeg || dLat > maxStepDeg) {
+      if (current.length >= 2) pieces.push(current);
+      current = [next];
+      continue;
+    }
+
+    current.push(next);
+  }
+
+  if (current.length >= 2) pieces.push(current);
+  return pieces;
+}
+
 type TrajectoryBuildResult = {
   group: THREE.Group;
   highlightMeshesByHourKey: Map<string, THREE.Mesh[]>;
   contourObjectsByHourKey: Map<string, THREE.Object3D[]>;
   finalContourObjectsByHourKey: Map<string, THREE.Object3D[]>;
+  ghostObjectsByHourKey: Map<string, THREE.Object3D[]>;
 };
 
 function toHourlyKey(timestamp: string) {
@@ -240,11 +293,13 @@ function buildTrajectoryGroup(file: BackwardTrajectoryFile, R: number): Trajecto
   const highlightMeshesByHourKey = new Map<string, THREE.Mesh[]>();
   const contourObjectsByHourKey = new Map<string, THREE.Object3D[]>();
   const finalContourObjectsByHourKey = new Map<string, THREE.Object3D[]>();
+  const ghostObjectsByHourKey = new Map<string, THREE.Object3D[]>();
 
   const lift = R * 0.003;
   const contourLift = R * 0.0035;
   const finalContourLineLift = R * 0.0044;
   const finalContourFillLift = R * 0.0042;
+  const ghostLift = R * 0.0048;
 
   const tcwRange = computeRange(points, "tcw_kg_m2");
   const gphRange = computeRange(points, "gph_m");
@@ -283,6 +338,7 @@ function buildTrajectoryGroup(file: BackwardTrajectoryFile, R: number): Trajecto
   });
 
   const dotGeo = new THREE.SphereGeometry(0.45, 10, 10);
+  const ghostDotGeo = new THREE.SphereGeometry(0.32, 9, 9);
 
   const pathPositions = new Float32Array(points.length * 3);
   for (let i = 0; i < points.length; i++) {
@@ -352,6 +408,79 @@ function buildTrajectoryGroup(file: BackwardTrajectoryFile, R: number): Trajecto
     if (meshesAtHour) meshesAtHour.push(highlight);
     else highlightMeshesByHourKey.set(hourKey, [highlight]);
 
+    const rawGhostCells = Array.isArray(p.ghost_forward_advected_cells)
+      ? p.ghost_forward_advected_cells
+      : [];
+    const ghostCells = rawGhostCells
+      .map((cell) => ({
+        forwardHour: Number(cell.forward_hour),
+        latitude: Number(cell.latitude),
+        longitude_360: Number.isFinite(Number(cell.longitude_360))
+          ? Number(cell.longitude_360)
+          : Number(cell.longitude),
+      }))
+      .filter(
+        (cell) =>
+          Number.isFinite(cell.forwardHour) &&
+          Number.isFinite(cell.latitude) &&
+          Number.isFinite(cell.longitude_360)
+      )
+      .sort((a, b) => a.forwardHour - b.forwardHour);
+
+    if (ghostCells.length > 0) {
+      const timedGhostObjects: THREE.Object3D[] = [];
+      const ghostPathPositions = new Float32Array((ghostCells.length + 1) * 3);
+      const start = latLonToVec3(p.latitude, p.longitude_360, R + ghostLift);
+      ghostPathPositions[0] = start.x;
+      ghostPathPositions[1] = start.y;
+      ghostPathPositions[2] = start.z;
+
+      for (let i = 0; i < ghostCells.length; i++) {
+        const ghostCell = ghostCells[i];
+        const gv = latLonToVec3(ghostCell.latitude, ghostCell.longitude_360, R + ghostLift);
+        const j = (i + 1) * 3;
+        ghostPathPositions[j + 0] = gv.x;
+        ghostPathPositions[j + 1] = gv.y;
+        ghostPathPositions[j + 2] = gv.z;
+
+        const ghostDot = new THREE.Mesh(
+          ghostDotGeo,
+          new THREE.MeshBasicMaterial({
+            color: new THREE.Color(0xf9d548),
+            transparent: true,
+            opacity: 0.96,
+            depthTest: true,
+            depthWrite: false,
+          })
+        );
+        ghostDot.position.copy(gv);
+        ghostDot.visible = false;
+        ghostDot.frustumCulled = false;
+        ghostDot.renderOrder = 70;
+        group.add(ghostDot);
+        timedGhostObjects.push(ghostDot);
+      }
+
+      const ghostLine = makeLine(
+        ghostPathPositions,
+        new THREE.LineBasicMaterial({
+          color: new THREE.Color(0xf9d548),
+          transparent: true,
+          opacity: 0.95,
+          depthTest: true,
+          depthWrite: false,
+        })
+      );
+      ghostLine.visible = false;
+      ghostLine.renderOrder = 70;
+      group.add(ghostLine);
+      timedGhostObjects.push(ghostLine);
+
+      const existingGhosts = ghostObjectsByHourKey.get(hourKey);
+      if (existingGhosts) existingGhosts.push(...timedGhostObjects);
+      else ghostObjectsByHourKey.set(hourKey, timedGhostObjects);
+    }
+
     const stemStart = base.clone();
     const stemEnd = base.clone().addScaledVector(normal, 1.2 + 3.8 * gphT);
     const stemPos = new Float32Array([
@@ -367,33 +496,35 @@ function buildTrajectoryGroup(file: BackwardTrajectoryFile, R: number): Trajecto
     const timedContourSnippets: THREE.Object3D[] = [];
     for (const contour of p.contours) {
       if (!contour.points || contour.points.length < 2) continue;
-      const contourPos = new Float32Array(contour.points.length * 3);
-
-      for (let i = 0; i < contour.points.length; i++) {
-        const [lon, lat] = contour.points[i];
-        const cv = latLonToVec3(lat, lon, R + contourLift);
-        const j = i * 3;
-        contourPos[j + 0] = cv.x;
-        contourPos[j + 1] = cv.y;
-        contourPos[j + 2] = cv.z;
-      }
-
       const contourGph = Number.isFinite(Number(contour.gph_m))
         ? Number(contour.gph_m)
         : Number(contour.level_m);
       const contourColor = gphToExtremaColor(contourGph, contourScaleMin, contourScaleMaxSafe);
-      const contourMat = new THREE.LineBasicMaterial({
-        color: contourColor,
-        transparent: true,
-        opacity: 0.78,
-        depthTest: true,
-        depthWrite: false,
-      });
-      const contourLine = makeLine(contourPos, contourMat);
-      contourLine.visible = false;
-      contourLine.renderOrder = 68;
-      group.add(contourLine);
-      timedContourSnippets.push(contourLine);
+
+      for (const piece of splitContourPolyline(contour.points)) {
+        const contourPos = new Float32Array(piece.length * 3);
+        for (let i = 0; i < piece.length; i++) {
+          const [lon, lat] = piece[i];
+          const cv = latLonToVec3(lat, lon, R + contourLift);
+          const j = i * 3;
+          contourPos[j + 0] = cv.x;
+          contourPos[j + 1] = cv.y;
+          contourPos[j + 2] = cv.z;
+        }
+
+        const contourMat = new THREE.LineBasicMaterial({
+          color: contourColor,
+          transparent: true,
+          opacity: 0.78,
+          depthTest: true,
+          depthWrite: false,
+        });
+        const contourLine = makeLine(contourPos, contourMat);
+        contourLine.visible = false;
+        contourLine.renderOrder = 68;
+        group.add(contourLine);
+        timedContourSnippets.push(contourLine);
+      }
     }
 
     if (timedContourSnippets.length > 0) {
@@ -415,16 +546,6 @@ function buildTrajectoryGroup(file: BackwardTrajectoryFile, R: number): Trajecto
         if (seen.has(contourKey)) continue;
         seen.add(contourKey);
 
-        const contourPos = new Float32Array(contour.points.length * 3);
-        for (let i = 0; i < contour.points.length; i++) {
-          const [lon, lat] = contour.points[i];
-          const cv = latLonToVec3(lat, lon, R + finalContourLineLift);
-          const j = i * 3;
-          contourPos[j + 0] = cv.x;
-          contourPos[j + 1] = cv.y;
-          contourPos[j + 2] = cv.z;
-        }
-
         const gphValue = Number.isFinite(Number(contour.gph_m))
           ? Number(contour.gph_m)
           : Number(contour.level_m);
@@ -434,18 +555,30 @@ function buildTrajectoryGroup(file: BackwardTrajectoryFile, R: number): Trajecto
           finalContourMaxSafe
         );
 
-        const contourMat = new THREE.LineBasicMaterial({
-          color: contourColor,
-          transparent: true,
-          opacity: 0.95,
-          depthTest: true,
-          depthWrite: false,
-        });
-        const line = makeLine(contourPos, contourMat);
-        line.visible = false;
-        line.renderOrder = 69;
-        group.add(line);
-        timedContourObjects.push(line);
+        for (const piece of splitContourPolyline(contour.points)) {
+          const contourPos = new Float32Array(piece.length * 3);
+          for (let i = 0; i < piece.length; i++) {
+            const [lon, lat] = piece[i];
+            const cv = latLonToVec3(lat, lon, R + finalContourLineLift);
+            const j = i * 3;
+            contourPos[j + 0] = cv.x;
+            contourPos[j + 1] = cv.y;
+            contourPos[j + 2] = cv.z;
+          }
+
+          const contourMat = new THREE.LineBasicMaterial({
+            color: contourColor,
+            transparent: true,
+            opacity: 0.95,
+            depthTest: true,
+            depthWrite: false,
+          });
+          const line = makeLine(contourPos, contourMat);
+          line.visible = false;
+          line.renderOrder = 69;
+          group.add(line);
+          timedContourObjects.push(line);
+        }
 
         if (contour.is_closed) {
           const fill = buildContourFillMesh(
@@ -476,6 +609,7 @@ function buildTrajectoryGroup(file: BackwardTrajectoryFile, R: number): Trajecto
     highlightMeshesByHourKey,
     contourObjectsByHourKey,
     finalContourObjectsByHourKey,
+    ghostObjectsByHourKey,
   };
 }
 
@@ -492,6 +626,8 @@ export default function BackwardTrajectoryLayer() {
   const activeContourObjectsRef = useRef<THREE.Object3D[]>([]);
   const finalContourObjectsByHourKeyRef = useRef<Map<string, THREE.Object3D[]>>(new Map());
   const activeFinalContourObjectsRef = useRef<THREE.Object3D[]>([]);
+  const ghostObjectsByHourKeyRef = useRef<Map<string, THREE.Object3D[]>>(new Map());
+  const activeGhostObjectsRef = useRef<THREE.Object3D[]>([]);
   const loadedRef = useRef(false);
   const failedRef = useRef(false);
   const latestTimestampRef = useRef(timestamp);
@@ -535,6 +671,13 @@ export default function BackwardTrajectoryLayer() {
         activeFinalContourObjectsRef
       );
       finalContourObjectsByHourKeyRef.current.clear();
+      setActiveGhostTrails(
+        false,
+        latestTimestampRef.current,
+        ghostObjectsByHourKeyRef.current,
+        activeGhostObjectsRef
+      );
+      ghostObjectsByHourKeyRef.current.clear();
 
       const content = contentRef.current;
       if (content) {
@@ -572,6 +715,12 @@ export default function BackwardTrajectoryLayer() {
       finalContourObjectsByHourKeyRef.current,
       activeFinalContourObjectsRef
     );
+    setActiveGhostTrails(
+      enabled,
+      latestTimestampRef.current,
+      ghostObjectsByHourKeyRef.current,
+      activeGhostObjectsRef
+    );
 
     if (!enabled || loadedRef.current || failedRef.current) {
       signalReady(latestTimestampRef.current);
@@ -601,6 +750,7 @@ export default function BackwardTrajectoryLayer() {
         highlightMeshesByHourKeyRef.current = built.highlightMeshesByHourKey;
         contourObjectsByHourKeyRef.current = built.contourObjectsByHourKey;
         finalContourObjectsByHourKeyRef.current = built.finalContourObjectsByHourKey;
+        ghostObjectsByHourKeyRef.current = built.ghostObjectsByHourKey;
         setActiveHighlights(
           enabled,
           latestTimestampRef.current,
@@ -618,6 +768,12 @@ export default function BackwardTrajectoryLayer() {
           latestTimestampRef.current,
           finalContourObjectsByHourKeyRef.current,
           activeFinalContourObjectsRef
+        );
+        setActiveGhostTrails(
+          enabled,
+          latestTimestampRef.current,
+          ghostObjectsByHourKeyRef.current,
+          activeGhostObjectsRef
         );
         loadedRef.current = true;
         failedRef.current = false;
@@ -658,6 +814,12 @@ export default function BackwardTrajectoryLayer() {
         finalContourObjectsByHourKeyRef.current,
         activeFinalContourObjectsRef
       );
+      setActiveGhostTrails(
+        false,
+        timestamp,
+        ghostObjectsByHourKeyRef.current,
+        activeGhostObjectsRef
+      );
       signalReady(timestamp);
       return;
     }
@@ -679,6 +841,12 @@ export default function BackwardTrajectoryLayer() {
       timestamp,
       finalContourObjectsByHourKeyRef.current,
       activeFinalContourObjectsRef
+    );
+    setActiveGhostTrails(
+      true,
+      timestamp,
+      ghostObjectsByHourKeyRef.current,
+      activeGhostObjectsRef
     );
 
     if (loadedRef.current || failedRef.current) {

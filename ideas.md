@@ -17,4 +17,4 @@ source of atmospheric river
 
 - make curated views rather than raw data layers like something thst shows source, transport, landfall, decay etc that show multiple layers/data together
 - for back trajectory layer show ensemble, slightly perturb target lat lon then go backwards 
-- random red line segments at the end of contour segments
+- lines connecting hourly dots overlaid on dots when they should be under and also seem like they dont start and end at center of a dot
