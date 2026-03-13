@@ -132,6 +132,14 @@ def _nearest_hour_timestamp(ts: Any) -> pd.Timestamp:
     return pd.Timestamp(ts).round("h")
 
 
+def _select_valid_time_slice(ds_obj: xr.Dataset | xr.DataArray, ts: Any) -> xr.Dataset | xr.DataArray:
+    ts64 = np.datetime64(_nearest_hour_timestamp(ts))
+    try:
+        return ds_obj.sel(valid_time=ts64)
+    except Exception:
+        return ds_obj.sel(valid_time=ts64, method="nearest")
+
+
 def extract_contour_segments(gph2d: xr.DataArray, levels: np.ndarray) -> dict[float, list[np.ndarray]]:
     fig, ax = plt.subplots(figsize=(3, 2))
     cs = ax.contour(
@@ -419,6 +427,86 @@ def _forward_advect_contour_parallel_speed(
 
             tangent = _nearest_segment_tangent_unit_from_dict(
                 contour_dict,
+                lon_step,
+                lat_step,
+            )
+            if tangent is None:
+                dir_east = float(u_ms / speed_ms)
+                dir_north = float(v_ms / speed_ms)
+            else:
+                dir_east = float(tangent["tangent_unit"][0])
+                dir_north = float(tangent["tangent_unit"][1])
+                if u_ms * dir_east + v_ms * dir_north < 0.0:
+                    dir_east = -dir_east
+                    dir_north = -dir_north
+
+            d_east_m = speed_ms * dir_east * dt_sub_s
+            d_north_m = speed_ms * dir_north * dt_sub_s
+            dlat_deg = np.degrees(d_north_m / earth_radius_m)
+            coslat = max(np.cos(np.radians(lat_step)), 1e-6)
+            dlon_deg = np.degrees(d_east_m / (earth_radius_m * coslat))
+
+            lat_step = float(np.clip(lat_step + dlat_deg, -89.75, 89.75))
+            lon_step = float((lon_step + dlon_deg) % 360.0)
+
+        lon = lon_step
+        lat = lat_step
+        ghost_points.append((lon, lat))
+
+    return np.asarray(ghost_points, dtype=float)
+
+
+def _forward_advect_contour_parallel_speed_timevarying(
+    uv_all: xr.Dataset,
+    gph_all: xr.DataArray,
+    contour_levels: np.ndarray,
+    start_time: Any,
+    lon0: float,
+    lat0: float,
+    hours: int = GHOST_FORWARD_HOURS,
+    substeps: int = GHOST_SUBSTEPS_PER_HOUR,
+    earth_radius_m: float = EARTH_RADIUS_M,
+    contour_cache: dict[pd.Timestamp, dict[float, list[np.ndarray]]] | None = None,
+) -> np.ndarray:
+    if substeps < 1:
+        raise ValueError("substeps must be >= 1")
+
+    lon = float(lon0) % 360.0
+    lat = float(np.clip(lat0, -89.75, 89.75))
+    dt_sub_s = 3600.0 / float(substeps)
+    start_ts = _nearest_hour_timestamp(start_time)
+    ghost_points: list[tuple[float, float]] = []
+
+    if contour_cache is None:
+        contour_cache = {}
+
+    for hour_idx in range(int(hours)):
+        hour_ts = start_ts + pd.Timedelta(hours=hour_idx)
+        hour_key = _nearest_hour_timestamp(hour_ts)
+        uv_hour = _select_valid_time_slice(uv_all, hour_ts)
+
+        if hour_key not in contour_cache:
+            gph_hour = _select_valid_time_slice(gph_all, hour_ts)
+            contour_cache[hour_key] = extract_contour_segments(gph_hour, contour_levels)
+        contour_dict_hour = contour_cache[hour_key]
+
+        lon_step = lon
+        lat_step = lat
+
+        for _ in range(int(substeps)):
+            uv = uv_hour.interp(
+                latitude=lat_step,
+                longitude=lon_step,
+                kwargs={"fill_value": "extrapolate"},
+            )
+            u_ms = float(uv["u"].values)
+            v_ms = float(uv["v"].values)
+            speed_ms = float(np.hypot(u_ms, v_ms))
+            if speed_ms < 1e-12:
+                continue
+
+            tangent = _nearest_segment_tangent_unit_from_dict(
+                contour_dict_hour,
                 lon_step,
                 lat_step,
             )
@@ -875,7 +963,11 @@ def build_export_payload(
     trajectory_samples["gph_m"] = np.asarray(gph_vals.values, dtype=float)
 
     contour_time_min = np.datetime64(trajectory_samples["valid_time"].min()) - time_pad
-    contour_time_max = np.datetime64(trajectory_samples["valid_time"].max()) + time_pad
+    contour_time_max = (
+        np.datetime64(trajectory_samples["valid_time"].max())
+        + time_pad
+        + np.timedelta64(GHOST_FORWARD_HOURS, "h")
+    )
     dataset_lats = np.asarray(era5_ds["latitude"].values, dtype=float)
     dataset_lons = np.asarray(era5_ds["longitude"].values, dtype=float)
     contour_lat_min = max(
@@ -924,6 +1016,8 @@ def build_export_payload(
     contour_by_hour: dict[int, list[dict[str, Any]]] = {}
     final_extrema_contours_by_hour: dict[int, dict[str, Any]] = {}
     ghost_forward_advected_cells_by_hour: dict[int, list[dict[str, Any]]] = {}
+    ghost_forward_advected_cells_timevarying_by_hour: dict[int, list[dict[str, Any]]] = {}
+    dynamic_ghost_contour_cache = dict(gph_hourly_contours)
 
     for _, row in tqdm(
         selected_points.iterrows(),
@@ -940,6 +1034,7 @@ def build_export_payload(
                 "none exist"
             )
             ghost_forward_advected_cells_by_hour[step_hour] = []
+            ghost_forward_advected_cells_timevarying_by_hour[step_hour] = []
             continue
 
         gph_frame = gph_hourly_925_m.sel(valid_time=np.datetime64(t_key))
@@ -967,6 +1062,27 @@ def build_export_payload(
                 "longitude_360": round(float(ghost_lon) % 360.0, 5),
             }
             for idx, (ghost_lon, ghost_lat) in enumerate(ghost_points)
+        ]
+        dynamic_ghost_points = _forward_advect_contour_parallel_speed_timevarying(
+            uv_hourly_925,
+            gph_hourly_925_m,
+            contour_levels,
+            t_key,
+            lon0,
+            lat0,
+            hours=GHOST_FORWARD_HOURS,
+            substeps=GHOST_SUBSTEPS_PER_HOUR,
+            earth_radius_m=EARTH_RADIUS_M,
+            contour_cache=dynamic_ghost_contour_cache,
+        )
+        ghost_forward_advected_cells_timevarying_by_hour[step_hour] = [
+            {
+                "forward_hour": int(idx + 1),
+                "latitude": round(float(ghost_lat), 5),
+                "longitude": round(float(ghost_lon), 5),
+                "longitude_360": round(float(ghost_lon) % 360.0, 5),
+            }
+            for idx, (ghost_lon, ghost_lat) in enumerate(dynamic_ghost_points)
         ]
 
         frame_lon_min = float(np.nanmin(np.asarray(gph_frame["longitude"].values, dtype=float)))
@@ -1081,6 +1197,9 @@ def build_export_payload(
                 "ghost_forward_advected_cells": ghost_forward_advected_cells_by_hour.get(
                     step_hour, []
                 ),
+                "ghost_forward_advected_cells_timevarying": ghost_forward_advected_cells_timevarying_by_hour.get(
+                    step_hour, []
+                ),
             }
         )
 
@@ -1130,6 +1249,10 @@ def build_export_payload(
             "ghost_advection_method": (
                 "direction from nearest contour tangent (aligned with local wind), "
                 "speed from local |u,v| at fixed frame hour"
+            ),
+            "ghost_advection_method_timevarying": (
+                "direction from nearest contour tangent (aligned with local wind), "
+                "speed from local |u,v| with hourly-updated winds and contours"
             ),
             "final_extrema_contour_scale_m": {
                 "min": contour_scale_min,

@@ -9,7 +9,9 @@ import {
   DivergencePressure,
   PVPressure,
   PV_PRESSURE_OPTIONS,
+  TEMPERATURE_DIFF_PRESSURE_OPTIONS,
   TEMPERATURE_PRESSURE_OPTIONS,
+  TemperatureDiffPressure,
   TemperaturePressure,
   useControls,
   VERTICAL_VELOCITY_PRESSURE_OPTIONS,
@@ -82,6 +84,13 @@ export default function TweakpaneControls() {
       temperatureAlpha: s0.temperature.uAlpha,
       temperatureContrast: s0.temperature.uContrast,
 
+      temperatureDiffPressureLevel: s0.temperatureDifference.pressureLevel,
+      uTempDeltaMin: s0.temperatureDifference.uDeltaMin,
+      uTempDeltaMax: s0.temperatureDifference.uDeltaMax,
+      temperatureDiffGamma: s0.temperatureDifference.uGamma,
+      temperatureDiffAlpha: s0.temperatureDifference.uAlpha,
+      temperatureDiffContrast: s0.temperatureDifference.uContrast,
+
       mslContrast: s0.mslContours.contrast,
       mslOpacity: s0.mslContours.opacity,
       contoursPressure: s0.contoursPressure as ContoursPressure,
@@ -99,6 +108,7 @@ export default function TweakpaneControls() {
       divergence: { ...s0.divergence },
       verticalVelocity: { ...s0.verticalVelocity },
       temperature: { ...s0.temperature },
+      temperatureDifference: { ...s0.temperatureDifference },
       mslContours: { ...s0.mslContours },
       contoursPressure: s0.contoursPressure as ContoursPressure,
       windTrailsPressure: s0.windTrailsPressure as WindTrailsPressure,
@@ -107,6 +117,7 @@ export default function TweakpaneControls() {
     let divergenceButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
     let verticalVelocityButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
     let temperatureButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
+    let temperatureDiffButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
     let contoursButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
     let windButtonsApi: ReturnType<typeof addButtonRowToFolder> | null = null;
 
@@ -124,6 +135,7 @@ export default function TweakpaneControls() {
       st.setDivergence(defaults.divergence);
       st.setVerticalVelocity(defaults.verticalVelocity);
       st.setTemperature(defaults.temperature);
+      st.setTemperatureDifference(defaults.temperatureDifference);
       st.setMslContours(defaults.mslContours);
 
       // update tweakpane-bound object immediately
@@ -173,6 +185,13 @@ export default function TweakpaneControls() {
       ui.temperatureAlpha = defaults.temperature.uAlpha;
       ui.temperatureContrast = defaults.temperature.uContrast;
 
+      ui.temperatureDiffPressureLevel = defaults.temperatureDifference.pressureLevel;
+      ui.uTempDeltaMin = defaults.temperatureDifference.uDeltaMin;
+      ui.uTempDeltaMax = defaults.temperatureDifference.uDeltaMax;
+      ui.temperatureDiffGamma = defaults.temperatureDifference.uGamma;
+      ui.temperatureDiffAlpha = defaults.temperatureDifference.uAlpha;
+      ui.temperatureDiffContrast = defaults.temperatureDifference.uContrast;
+
       ui.mslContrast = defaults.mslContours.contrast;
       ui.mslOpacity = defaults.mslContours.opacity;
       ui.contoursPressure = defaults.contoursPressure;
@@ -186,6 +205,9 @@ export default function TweakpaneControls() {
         defaults.verticalVelocity.pressureLevel
       );
       temperatureButtonsApi?.setSelectedValue(defaults.temperature.pressureLevel);
+      temperatureDiffButtonsApi?.setSelectedValue(
+        defaults.temperatureDifference.pressureLevel
+      );
       contoursButtonsApi?.setSelectedValue(defaults.contoursPressure);
       windButtonsApi?.setSelectedValue(defaults.windTrailsPressure);
     });
@@ -529,6 +551,60 @@ export default function TweakpaneControls() {
       useControls.getState().setTemperature({ uContrast: Number(e.value) });
     });
 
+    const temperatureDifferenceFolder = pane.addFolder({
+      title: "Temp Diff (1h) Params",
+    });
+    const bTempDiffMin = temperatureDifferenceFolder.addBinding(ui, "uTempDeltaMin", {
+      label: "uDeltaMin",
+      min: -20,
+      max: 0,
+      step: 0.1,
+    });
+    const bTempDiffMax = temperatureDifferenceFolder.addBinding(ui, "uTempDeltaMax", {
+      label: "uDeltaMax",
+      min: 0,
+      max: 20,
+      step: 0.1,
+    });
+    const bTempDiffGamma = temperatureDifferenceFolder.addBinding(ui, "temperatureDiffGamma", {
+      label: "gamma",
+      min: 0.1,
+      max: 3.0,
+      step: 0.05,
+    });
+    const bTempDiffAlpha = temperatureDifferenceFolder.addBinding(ui, "temperatureDiffAlpha", {
+      label: "alpha",
+      min: 0.0,
+      max: 1.0,
+      step: 0.01,
+    });
+    const bTempDiffContrast = temperatureDifferenceFolder.addBinding(
+      ui,
+      "temperatureDiffContrast",
+      {
+        label: "contrast",
+        min: 0.5,
+        max: 4.0,
+        step: 0.05,
+      }
+    );
+
+    bTempDiffMin.on("change", (e) => {
+      useControls.getState().setTemperatureDifference({ uDeltaMin: Number(e.value) });
+    });
+    bTempDiffMax.on("change", (e) => {
+      useControls.getState().setTemperatureDifference({ uDeltaMax: Number(e.value) });
+    });
+    bTempDiffGamma.on("change", (e) => {
+      useControls.getState().setTemperatureDifference({ uGamma: Number(e.value) });
+    });
+    bTempDiffAlpha.on("change", (e) => {
+      useControls.getState().setTemperatureDifference({ uAlpha: Number(e.value) });
+    });
+    bTempDiffContrast.on("change", (e) => {
+      useControls.getState().setTemperatureDifference({ uContrast: Number(e.value) });
+    });
+
 
     // ---- subscriptions: keep tweakpane in sync if store changes elsewhere ----
     const unsubMoistureVis = useControls.subscribe(
@@ -645,6 +721,19 @@ export default function TweakpaneControls() {
       }
     );
 
+    const unsubTemperatureDifferenceParams = useControls.subscribe(
+      (s) => s.temperatureDifference,
+      (p) => {
+        ui.temperatureDiffPressureLevel = p.pressureLevel;
+        ui.uTempDeltaMin = p.uDeltaMin;
+        ui.uTempDeltaMax = p.uDeltaMax;
+        ui.temperatureDiffGamma = p.uGamma;
+        ui.temperatureDiffAlpha = p.uAlpha;
+        ui.temperatureDiffContrast = p.uContrast;
+        temperatureDiffButtonsApi?.setSelectedValue(p.pressureLevel);
+      }
+    );
+
     const mslFolder = pane.addFolder({ title: "Contours Params" });
 
     const bMslContrast = mslFolder.addBinding(ui, "mslContrast", {
@@ -732,6 +821,23 @@ export default function TweakpaneControls() {
     });
 
     addSeparatorToFolder(layersFolder);
+    temperatureDiffButtonsApi = addButtonRowToFolder(layersFolder, {
+      label: "Temp Δ1h",
+      subtextLines: ["Red = warming", "Blue = cooling"],
+      selectedValue: ui.temperatureDiffPressureLevel,
+      toggleOffValue: "none",
+      buttons: TEMPERATURE_DIFF_PRESSURE_OPTIONS.map((opt) => ({
+        title: opt.label,
+        value: opt.value,
+        onClick: (nextValue) => {
+          const v = nextValue as TemperatureDiffPressure;
+          useControls.getState().setTemperatureDifference({ pressureLevel: v });
+          ui.temperatureDiffPressureLevel = v;
+        },
+      })),
+    });
+
+    addSeparatorToFolder(layersFolder);
     contoursButtonsApi = addButtonRowToFolder(layersFolder, {
       label: "Contours",
       subtextLines: ["Red = higher gph", "Blue = lower gph"],
@@ -806,6 +912,7 @@ export default function TweakpaneControls() {
       unsubDivergenceParams();
       unsubVerticalVelocityParams();
       unsubTemperatureParams();
+      unsubTemperatureDifferenceParams();
       unsubMslParams();
       unsubContoursPressure();
       unsubWindPressure();

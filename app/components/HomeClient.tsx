@@ -45,6 +45,14 @@ const TemperatureLayer = dynamic(() => import("./layers/TemperatureLayer"), {
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
 });
 
+const TemperatureDifferenceLayer = dynamic(
+  () => import("./layers/TemperatureDifferenceLayer"),
+  {
+    ssr: false,
+    loading: () => <div style={{ width: "100%", height: "100%" }} />,
+  }
+);
+
 const MslContoursLayer = dynamic(() => import("./layers/MslContoursLayer"), {
   ssr: false,
   loading: () => <div style={{ width: "100%", height: "100%" }} />,
@@ -120,6 +128,7 @@ export default function HomeClient() {
             <DivergenceLayer />
             <VerticalVelocityLayer />
             <TemperatureLayer />
+            <TemperatureDifferenceLayer />
             <MslContoursLayer />
             <BackwardTrajectoryLayer />
             {/* <WindUVArrowsLayer /> */}

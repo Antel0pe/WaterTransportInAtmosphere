@@ -139,6 +139,33 @@ function setActiveGhostTrails(
   activeGhostObjectsRef.current = next;
 }
 
+type GhostTrailCell = {
+  forwardHour: number;
+  latitude: number;
+  longitude_360: number;
+};
+
+function normalizeGhostCells(
+  rawCells: BackwardTrajectoryPoint["ghost_forward_advected_cells"] | undefined
+): GhostTrailCell[] {
+  const cells = Array.isArray(rawCells) ? rawCells : [];
+  return cells
+    .map((cell) => ({
+      forwardHour: Number(cell.forward_hour),
+      latitude: Number(cell.latitude),
+      longitude_360: Number.isFinite(Number(cell.longitude_360))
+        ? Number(cell.longitude_360)
+        : Number(cell.longitude),
+    }))
+    .filter(
+      (cell) =>
+        Number.isFinite(cell.forwardHour) &&
+        Number.isFinite(cell.latitude) &&
+        Number.isFinite(cell.longitude_360)
+    )
+    .sort((a, b) => a.forwardHour - b.forwardHour);
+}
+
 function gphToExtremaColor(levelM: number, minM: number, maxM: number) {
   const t = norm(levelM, minM, maxM);
   const blue = new THREE.Color(0x205cff);
@@ -408,73 +435,67 @@ function buildTrajectoryGroup(file: BackwardTrajectoryFile, R: number): Trajecto
     if (meshesAtHour) meshesAtHour.push(highlight);
     else highlightMeshesByHourKey.set(hourKey, [highlight]);
 
-    const rawGhostCells = Array.isArray(p.ghost_forward_advected_cells)
-      ? p.ghost_forward_advected_cells
-      : [];
-    const ghostCells = rawGhostCells
-      .map((cell) => ({
-        forwardHour: Number(cell.forward_hour),
-        latitude: Number(cell.latitude),
-        longitude_360: Number.isFinite(Number(cell.longitude_360))
-          ? Number(cell.longitude_360)
-          : Number(cell.longitude),
-      }))
-      .filter(
-        (cell) =>
-          Number.isFinite(cell.forwardHour) &&
-          Number.isFinite(cell.latitude) &&
-          Number.isFinite(cell.longitude_360)
-      )
-      .sort((a, b) => a.forwardHour - b.forwardHour);
+    const ghostCells = normalizeGhostCells(p.ghost_forward_advected_cells);
+    const ghostCellsTimeVarying = normalizeGhostCells(
+      p.ghost_forward_advected_cells_timevarying
+    );
 
-    if (ghostCells.length > 0) {
+    if (ghostCells.length > 0 || ghostCellsTimeVarying.length > 0) {
       const timedGhostObjects: THREE.Object3D[] = [];
-      const ghostPathPositions = new Float32Array((ghostCells.length + 1) * 3);
       const start = latLonToVec3(p.latitude, p.longitude_360, R + ghostLift);
-      ghostPathPositions[0] = start.x;
-      ghostPathPositions[1] = start.y;
-      ghostPathPositions[2] = start.z;
 
-      for (let i = 0; i < ghostCells.length; i++) {
-        const ghostCell = ghostCells[i];
-        const gv = latLonToVec3(ghostCell.latitude, ghostCell.longitude_360, R + ghostLift);
-        const j = (i + 1) * 3;
-        ghostPathPositions[j + 0] = gv.x;
-        ghostPathPositions[j + 1] = gv.y;
-        ghostPathPositions[j + 2] = gv.z;
+      const addGhostTrail = (cells: GhostTrailCell[], colorHex: number) => {
+        if (cells.length === 0) return;
 
-        const ghostDot = new THREE.Mesh(
-          ghostDotGeo,
-          new THREE.MeshBasicMaterial({
-            color: new THREE.Color(0xf9d548),
+        const ghostPathPositions = new Float32Array((cells.length + 1) * 3);
+        ghostPathPositions[0] = start.x;
+        ghostPathPositions[1] = start.y;
+        ghostPathPositions[2] = start.z;
+
+        for (let i = 0; i < cells.length; i++) {
+          const ghostCell = cells[i];
+          const gv = latLonToVec3(ghostCell.latitude, ghostCell.longitude_360, R + ghostLift);
+          const j = (i + 1) * 3;
+          ghostPathPositions[j + 0] = gv.x;
+          ghostPathPositions[j + 1] = gv.y;
+          ghostPathPositions[j + 2] = gv.z;
+
+          const ghostDot = new THREE.Mesh(
+            ghostDotGeo,
+            new THREE.MeshBasicMaterial({
+              color: new THREE.Color(colorHex),
+              transparent: true,
+              opacity: 0.96,
+              depthTest: true,
+              depthWrite: false,
+            })
+          );
+          ghostDot.position.copy(gv);
+          ghostDot.visible = false;
+          ghostDot.frustumCulled = false;
+          ghostDot.renderOrder = 70;
+          group.add(ghostDot);
+          timedGhostObjects.push(ghostDot);
+        }
+
+        const ghostLine = makeLine(
+          ghostPathPositions,
+          new THREE.LineBasicMaterial({
+            color: new THREE.Color(colorHex),
             transparent: true,
-            opacity: 0.96,
+            opacity: 0.95,
             depthTest: true,
             depthWrite: false,
           })
         );
-        ghostDot.position.copy(gv);
-        ghostDot.visible = false;
-        ghostDot.frustumCulled = false;
-        ghostDot.renderOrder = 70;
-        group.add(ghostDot);
-        timedGhostObjects.push(ghostDot);
-      }
+        ghostLine.visible = false;
+        ghostLine.renderOrder = 70;
+        group.add(ghostLine);
+        timedGhostObjects.push(ghostLine);
+      };
 
-      const ghostLine = makeLine(
-        ghostPathPositions,
-        new THREE.LineBasicMaterial({
-          color: new THREE.Color(0xf9d548),
-          transparent: true,
-          opacity: 0.95,
-          depthTest: true,
-          depthWrite: false,
-        })
-      );
-      ghostLine.visible = false;
-      ghostLine.renderOrder = 70;
-      group.add(ghostLine);
-      timedGhostObjects.push(ghostLine);
+      addGhostTrail(ghostCells, 0xf9d548);
+      addGhostTrail(ghostCellsTimeVarying, 0x5bd96a);
 
       const existingGhosts = ghostObjectsByHourKey.get(hourKey);
       if (existingGhosts) existingGhosts.push(...timedGhostObjects);

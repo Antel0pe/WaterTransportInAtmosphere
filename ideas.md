@@ -18,3 +18,4 @@ source of atmospheric river
 - make curated views rather than raw data layers like something thst shows source, transport, landfall, decay etc that show multiple layers/data together
 - for back trajectory layer show ensemble, slightly perturb target lat lon then go backwards 
 - lines connecting hourly dots overlaid on dots when they should be under and also seem like they dont start and end at center of a dot
+- for showing why gph extremas move in the future maybe show back traj gph extremas and the under have a heat layer or something that is 2h ahead and showing you the temp moves ahead and then the gph appears there in next timestamp. something that shows visually an obvious connection leading the gph. have to make obvious its offset or ideally the thing showing is leading at the same timestamp and gph catches up 

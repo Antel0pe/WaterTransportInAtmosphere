@@ -115,6 +115,7 @@ export type BackwardTrajectoryPoint = {
   contours: BackwardTrajectoryContourSnippet[];
   final_extrema_contours: BackwardTrajectoryFinalExtremaContours;
   ghost_forward_advected_cells?: BackwardTrajectoryGhostForwardCell[];
+  ghost_forward_advected_cells_timevarying?: BackwardTrajectoryGhostForwardCell[];
 };
 
 export type BackwardTrajectoryFile = {
@@ -134,6 +135,7 @@ export type BackwardTrajectoryFile = {
     ghost_forward_hours?: number;
     ghost_substeps_per_hour?: number;
     ghost_advection_method?: string;
+    ghost_advection_method_timevarying?: string;
     final_extrema_contour_scale_m: {
       min: number;
       mid: number;

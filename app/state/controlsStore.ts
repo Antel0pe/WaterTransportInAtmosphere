@@ -69,6 +69,15 @@ type TemperatureParams = {
   uContrast: number;
 };
 
+type TemperatureDifferenceParams = {
+  pressureLevel: TemperatureDiffPressure;
+  uDeltaMin: number;
+  uDeltaMax: number;
+  uGamma: number;
+  uAlpha: number;
+  uContrast: number;
+};
+
 type MslContoursParams = {
   contrast: number;
   opacity: number;
@@ -134,6 +143,16 @@ export const TEMPERATURE_PRESSURE_OPTIONS = [
 export type TemperaturePressure =
   (typeof TEMPERATURE_PRESSURE_OPTIONS)[number]["value"];
 
+export const TEMPERATURE_DIFF_PRESSURE_OPTIONS = [
+  { value: "none", label: "None" },
+  { value: 250, label: "250 hPa" },
+  { value: 500, label: "500 hPa" },
+  { value: 925, label: "925 hPa" },
+] as const;
+
+export type TemperatureDiffPressure =
+  (typeof TEMPERATURE_DIFF_PRESSURE_OPTIONS)[number]["value"];
+
 type ControlsState = {
   layers: LayerToggles;
   evap: EvapParams;
@@ -143,6 +162,7 @@ type ControlsState = {
   divergence: DivergenceParams;
   verticalVelocity: VerticalVelocityParams;
   temperature: TemperatureParams;
+  temperatureDifference: TemperatureDifferenceParams;
   mslContours: MslContoursParams;
   contoursPressure: ContoursPressure;
   windTrailsPressure: WindTrailsPressure;
@@ -155,6 +175,7 @@ type ControlsState = {
   setDivergence: (patch: Partial<DivergenceParams>) => void;
   setVerticalVelocity: (patch: Partial<VerticalVelocityParams>) => void;
   setTemperature: (patch: Partial<TemperatureParams>) => void;
+  setTemperatureDifference: (patch: Partial<TemperatureDifferenceParams>) => void;
   setMslContours: (patch: Partial<MslContoursParams>) => void;
   setContoursPressure: (pressure: ContoursPressure) => void;
   setWindTrailsPressure: (pressure: WindTrailsPressure) => void;
@@ -233,6 +254,14 @@ export const useControls = create<ControlsState>()(
       uAlpha: 0.95,
       uContrast: 1.6,
     },
+    temperatureDifference: {
+      pressureLevel: "none",
+      uDeltaMin: -4.0,
+      uDeltaMax: 4.0,
+      uGamma: 1.0,
+      uAlpha: 0.95,
+      uContrast: 1.5,
+    },
 
     setLayer: (k, v) =>
       set((s) => ({ layers: { ...s.layers, [k]: v } })),
@@ -260,6 +289,11 @@ export const useControls = create<ControlsState>()(
     setTemperature: (patch) =>
       set((s) => ({
         temperature: { ...s.temperature, ...patch },
+      })),
+
+    setTemperatureDifference: (patch) =>
+      set((s) => ({
+        temperatureDifference: { ...s.temperatureDifference, ...patch },
       })),
 
     setMslContours: (patch) =>
