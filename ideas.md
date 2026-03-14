@@ -19,3 +19,8 @@ source of atmospheric river
 - for back trajectory layer show ensemble, slightly perturb target lat lon then go backwards 
 - lines connecting hourly dots overlaid on dots when they should be under and also seem like they dont start and end at center of a dot
 - for showing why gph extremas move in the future maybe show back traj gph extremas and the under have a heat layer or something that is 2h ahead and showing you the temp moves ahead and then the gph appears there in next timestamp. something that shows visually an obvious connection leading the gph. have to make obvious its offset or ideally the thing showing is leading at the same timestamp and gph catches up 
+- for gph extremas specifically minimum
+    - first order causes have to be either divergence aloft or cold temperature
+    - then can look at reasons like upper level things like 500 or 250 pv etc
+
+- make time slider and sidebar maybe float with transparent background on threejs scene? something like cool twitter post i saw? 
