@@ -24,3 +24,5 @@ source of atmospheric river
     - then can look at reasons like upper level things like 500 or 250 pv etc
 
 - make time slider and sidebar maybe float with transparent background on threejs scene? something like cool twitter post i saw? 
+
+- for gph extrema identification use a method like percentile based or around a stable area measurement so that you dont oscillate between the absolute lowest which can make it seem like the extrema feature is wildly changing rather than the specifics of your contour spacing. reference current spacing for what im talking about nov 10 2021 11pm utc
