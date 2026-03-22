@@ -42,6 +42,7 @@ export default function TweakpaneControls() {
       evaporation: s0.layers.evaporation,
       ivt: s0.layers.ivt,
       backwardTrajectory: s0.layers.backwardTrajectory,
+      trajectorySteering: s0.layers.trajectorySteering,
 
       uAnomMin: s0.moisture.uAnomMin,
       uAnomMax: s0.moisture.uAnomMax,
@@ -96,6 +97,10 @@ export default function TweakpaneControls() {
       contoursPressure: s0.contoursPressure as ContoursPressure,
 
       windTrailsPressure: s0.windTrailsPressure as WindTrailsPressure,
+
+      steeringContourOpacity: s0.trajectorySteeringStyle.contourOpacity,
+      steeringContourGradientRibbon: s0.trajectorySteeringStyle.contourGradientRibbon,
+      steeringContourPulse: s0.trajectorySteeringStyle.contourPulse,
     };
 
     // ---- Reset ----
@@ -110,6 +115,7 @@ export default function TweakpaneControls() {
       temperature: { ...s0.temperature },
       temperatureDifference: { ...s0.temperatureDifference },
       mslContours: { ...s0.mslContours },
+      trajectorySteeringStyle: { ...s0.trajectorySteeringStyle },
       contoursPressure: s0.contoursPressure as ContoursPressure,
       windTrailsPressure: s0.windTrailsPressure as WindTrailsPressure,
     };
@@ -137,12 +143,14 @@ export default function TweakpaneControls() {
       st.setTemperature(defaults.temperature);
       st.setTemperatureDifference(defaults.temperatureDifference);
       st.setMslContours(defaults.mslContours);
+      st.setTrajectorySteeringStyle(defaults.trajectorySteeringStyle);
 
       // update tweakpane-bound object immediately
       ui.moisture = defaults.layers.moisture;
       ui.evaporation = defaults.layers.evaporation;
       ui.ivt = defaults.layers.ivt;
       ui.backwardTrajectory = defaults.layers.backwardTrajectory;
+      ui.trajectorySteering = defaults.layers.trajectorySteering;
 
       ui.uAnomMin = defaults.moisture.uAnomMin;
       ui.uAnomMax = defaults.moisture.uAnomMax;
@@ -199,6 +207,11 @@ export default function TweakpaneControls() {
 
       ui.windTrailsPressure = defaults.windTrailsPressure;
       st.setWindTrailsPressure(defaults.windTrailsPressure);
+
+      ui.steeringContourOpacity = defaults.trajectorySteeringStyle.contourOpacity;
+      ui.steeringContourGradientRibbon = defaults.trajectorySteeringStyle.contourGradientRibbon;
+      ui.steeringContourPulse = defaults.trajectorySteeringStyle.contourPulse;
+
       pvButtonsApi?.setSelectedValue(defaults.pv.pressureLevel);
       divergenceButtonsApi?.setSelectedValue(defaults.divergence.pressureLevel);
       verticalVelocityButtonsApi?.setSelectedValue(
@@ -212,17 +225,31 @@ export default function TweakpaneControls() {
       windButtonsApi?.setSelectedValue(defaults.windTrailsPressure);
     });
 
-    // ---- Layers ----
-    const layersFolder = pane.addFolder({ title: "Layers" });
+    // ---- Explainable layers ----
+    const explainableLayersFolder = pane.addFolder({ title: "Explainable Layers" });
+
+    const bBackTraj = explainableLayersFolder.addBinding(ui, "backwardTrajectory", {
+      label: "Back Trajectory",
+    });
+    const bTrajectorySteering = explainableLayersFolder.addBinding(ui, "trajectorySteering", {
+      label: "Trajectory Steering",
+    });
+
+    bBackTraj.on("change", (e) => {
+      useControls.getState().setLayer("backwardTrajectory", !!e.value);
+    });
+    bTrajectorySteering.on("change", (e) => {
+      useControls.getState().setLayer("trajectorySteering", !!e.value);
+    });
+
+    // ---- Data layers ----
+    const layersFolder = pane.addFolder({ title: "Data Layers" });
 
     const bMoisture = layersFolder.addBinding(ui, "moisture", {
       label: "Moisture",
     });
     const bEvap = layersFolder.addBinding(ui, "evaporation", {
       label: "Evaporation",
-    });
-    const bBackTraj = layersFolder.addBinding(ui, "backwardTrajectory", {
-      label: "Back Trajectory",
     });
 
     bMoisture.on("change", (e) => {
@@ -231,9 +258,30 @@ export default function TweakpaneControls() {
     bEvap.on("change", (e) => {
       useControls.getState().setLayer("evaporation", !!e.value);
     });
-    bBackTraj.on("change", (e) => {
-      useControls.getState().setLayer("backwardTrajectory", !!e.value);
-    });
+
+    const steeringStyleFolder = pane.addFolder({ title: "Trajectory Steering Style" });
+
+    steeringStyleFolder
+      .addBinding(ui, "steeringContourOpacity", { label: "Line Opacity" })
+      .on("change", (e) => {
+        useControls
+          .getState()
+          .setTrajectorySteeringStyle({ contourOpacity: !!e.value });
+      });
+
+    steeringStyleFolder
+      .addBinding(ui, "steeringContourGradientRibbon", { label: "Gradient Ribbon" })
+      .on("change", (e) => {
+        useControls
+          .getState()
+          .setTrajectorySteeringStyle({ contourGradientRibbon: !!e.value });
+      });
+
+    steeringStyleFolder
+      .addBinding(ui, "steeringContourPulse", { label: "Pulse" })
+      .on("change", (e) => {
+        useControls.getState().setTrajectorySteeringStyle({ contourPulse: !!e.value });
+      });
 
     // ---- Moisture params (sliders) ----
     const moistureFolder = pane.addFolder({ title: "Moisture Params" });
@@ -661,6 +709,13 @@ export default function TweakpaneControls() {
       }
     );
 
+    const unsubTrajectorySteeringVis = useControls.subscribe(
+      (s) => s.layers.trajectorySteering,
+      (v) => {
+        ui.trajectorySteering = v;
+      }
+    );
+
     const unsubIVTParams = useControls.subscribe(
       (s) => s.ivt,
       (p) => {
@@ -907,6 +962,7 @@ export default function TweakpaneControls() {
       unsubEvapParams();
       unsubIVTVis();
       unsubBackTrajVis();
+      unsubTrajectorySteeringVis();
       unsubIVTParams();
       unsubPVParams();
       unsubDivergenceParams();

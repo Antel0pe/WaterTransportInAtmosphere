@@ -12,6 +12,7 @@ data/
 /public/temperature-rg/*
 /public/gph_contours/*
 /public/backward_trajectory/*
+/public/trajectory_steering/*
 # dependencies
 /node_modules
 /.pnp
@@ -51,3 +52,4 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+__pycache__/

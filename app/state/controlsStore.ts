@@ -6,6 +6,7 @@ export type LayerToggles = {
   evaporation: boolean;
   ivt: boolean;
   backwardTrajectory: boolean;
+  trajectorySteering: boolean;
 };
 
 type EvapParams = {
@@ -81,6 +82,12 @@ type TemperatureDifferenceParams = {
 type MslContoursParams = {
   contrast: number;
   opacity: number;
+};
+
+type TrajectorySteeringStyleParams = {
+  contourOpacity: boolean;
+  contourGradientRibbon: boolean;
+  contourPulse: boolean;
 };
 
 export const CONTOURS_PRESSURE_OPTIONS = [
@@ -164,6 +171,7 @@ type ControlsState = {
   temperature: TemperatureParams;
   temperatureDifference: TemperatureDifferenceParams;
   mslContours: MslContoursParams;
+  trajectorySteeringStyle: TrajectorySteeringStyleParams;
   contoursPressure: ContoursPressure;
   windTrailsPressure: WindTrailsPressure;
 
@@ -177,6 +185,7 @@ type ControlsState = {
   setTemperature: (patch: Partial<TemperatureParams>) => void;
   setTemperatureDifference: (patch: Partial<TemperatureDifferenceParams>) => void;
   setMslContours: (patch: Partial<MslContoursParams>) => void;
+  setTrajectorySteeringStyle: (patch: Partial<TrajectorySteeringStyleParams>) => void;
   setContoursPressure: (pressure: ContoursPressure) => void;
   setWindTrailsPressure: (pressure: WindTrailsPressure) => void;
 };
@@ -187,12 +196,18 @@ export const useControls = create<ControlsState>()(
       moisture: false,
       evaporation: false,
       ivt: false,
-      backwardTrajectory: true,
+      backwardTrajectory: false,
+      trajectorySteering: true,
     },
 
     mslContours: {
       contrast: 3.5,
       opacity: 0.95,
+    },
+    trajectorySteeringStyle: {
+      contourOpacity: false,
+      contourGradientRibbon: false,
+      contourPulse: true,
     },
     contoursPressure: "none",
     windTrailsPressure: "none",
@@ -298,6 +313,11 @@ export const useControls = create<ControlsState>()(
 
     setMslContours: (patch) =>
       set((s) => ({ mslContours: { ...s.mslContours, ...patch } })),
+
+    setTrajectorySteeringStyle: (patch) =>
+      set((s) => ({
+        trajectorySteeringStyle: { ...s.trajectorySteeringStyle, ...patch },
+      })),
 
     setContoursPressure: (pressure) =>
       set(() => ({ contoursPressure: pressure })),

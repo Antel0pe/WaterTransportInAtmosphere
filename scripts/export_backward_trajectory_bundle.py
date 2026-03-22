@@ -96,14 +96,14 @@ def backward_integrate_trajectory_uv(
             t_mid = t_curr - np.timedelta64(int(sec_back), "s")
 
             uv = ds_uv.interp(
-                valid_time=t_mid,
-                latitude=lat_step,
-                longitude=lon_step,
-                kwargs={"fill_value": "extrapolate"},
+                valid_time=xr.DataArray([t_mid], dims="point"),
+                latitude=xr.DataArray([lat_step], dims="point"),
+                longitude=xr.DataArray([lon_step], dims="point"),
+                kwargs={"bounds_error": False, "fill_value": None},
             )
 
-            u_ms = float(uv["u"].values)
-            v_ms = float(uv["v"].values)
+            u_ms = float(np.asarray(uv["u"].values).reshape(-1)[0])
+            v_ms = float(np.asarray(uv["v"].values).reshape(-1)[0])
 
             dlat_deg = np.degrees((v_ms * dt_sub_s) / earth_radius_m)
             coslat = max(np.cos(np.radians(lat_step)), 1e-6)
@@ -163,7 +163,7 @@ def _interp_gph_value(gph2d: xr.DataArray, lon: float, lat: float) -> float:
     val = gph2d.interp(
         latitude=float(lat),
         longitude=float(lon),
-        kwargs={"fill_value": "extrapolate"},
+        kwargs={"bounds_error": False, "fill_value": None},
     )
     return float(val.values)
 
@@ -417,7 +417,7 @@ def _forward_advect_contour_parallel_speed(
             uv = uv_at_hour.interp(
                 latitude=lat_step,
                 longitude=lon_step,
-                kwargs={"fill_value": "extrapolate"},
+                kwargs={"bounds_error": False, "fill_value": None},
             )
             u_ms = float(uv["u"].values)
             v_ms = float(uv["v"].values)
@@ -497,7 +497,7 @@ def _forward_advect_contour_parallel_speed_timevarying(
             uv = uv_hour.interp(
                 latitude=lat_step,
                 longitude=lon_step,
-                kwargs={"fill_value": "extrapolate"},
+                kwargs={"bounds_error": False, "fill_value": None},
             )
             u_ms = float(uv["u"].values)
             v_ms = float(uv["v"].values)
@@ -1313,7 +1313,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-lon", type=float, default=-123.12)
     parser.add_argument("--start-time", type=str, default="2021-11-12T15:00:00")
     parser.add_argument("--pressure-level", type=int, default=925)
-    parser.add_argument("--hours-back", type=int, default=72)
+    parser.add_argument("--hours-back", type=int, default=100)
     parser.add_argument("--substeps", type=int, default=4)
     parser.add_argument("--contour-min-m", type=float, default=560.0)
     parser.add_argument("--contour-max-m", type=float, default=940.0)

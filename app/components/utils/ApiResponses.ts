@@ -63,6 +63,10 @@ export function backwardTrajectoryApiUrl() {
   return "/api/backward_trajectory";
 }
 
+export function trajectorySteeringApiUrl() {
+  return "/api/trajectory_steering";
+}
+
 export type BackwardTrajectoryContourSnippet = {
   level_m: number;
   gph_m: number;
@@ -168,4 +172,100 @@ export async function fetchBackwardTrajectory(): Promise<BackwardTrajectoryFile>
   }
 
   return (await res.json()) as BackwardTrajectoryFile;
+}
+
+export type TrajectorySteeringContour = {
+  level_m: number;
+  segment_index: number;
+  points: LonLat[];
+};
+
+export type TrajectorySteeringSample = {
+  latitude: number;
+  longitude: number;
+  longitude_360: number;
+  gph_m: number;
+  gph_grad_m_per_100km: number;
+  thetae_k: number;
+  thetae_grad_k_per_100km: number;
+  wind_speed_ms: number;
+};
+
+export type TrajectorySteeringPoint = {
+  step_hour: number;
+  valid_time: string;
+  hour_key: string;
+  latitude: number;
+  longitude: number;
+  longitude_360: number;
+  gph_m: number;
+  wind_speed_ms: number;
+};
+
+export type TrajectorySteeringFrame = TrajectorySteeringPoint & {
+  grid_latitudes: number[];
+  grid_longitudes: number[];
+  samples: TrajectorySteeringSample[];
+  contours: TrajectorySteeringContour[];
+};
+
+export type TrajectorySteeringFile = {
+  metadata: {
+    target_name: string;
+    start_lat: number;
+    start_lon: number;
+    start_lon_360: number;
+    requested_start_time: string;
+    resolved_start_time: string;
+    pressure_level_hpa: number;
+    hours_back_requested: number;
+    hours_back_actual: number;
+    substeps: number;
+    hue_field: string;
+    saturation_field: string;
+    opacity_field: string;
+    contour_levels_m: number[];
+    sample_half_span_lat_deg: number;
+    sample_half_span_lon_deg: number;
+    sample_spacing_deg: number;
+    contour_half_span_lat_deg: number;
+    contour_half_span_lon_deg: number;
+    contour_spacing_deg: number;
+    generated_at_utc: string;
+  };
+  summary: {
+    point_count: number;
+    frame_count: number;
+    gph_min_m: number;
+    gph_max_m: number;
+    thetae_min_k: number;
+    thetae_max_k: number;
+    thetae_mid_k: number;
+    thetae_p10_k: number;
+    thetae_p90_k: number;
+    thetae_center_k: number;
+    thetae_half_range_k: number;
+    thetae_grad_p95_k_per_100km: number;
+    gph_grad_p50_m_per_100km: number;
+    gph_grad_p90_m_per_100km: number;
+    gph_grad_p95_m_per_100km: number;
+    wind_speed_min_ms: number;
+    wind_speed_p25_ms: number;
+    wind_speed_p95_ms: number;
+  };
+  points: TrajectorySteeringPoint[];
+  frames: TrajectorySteeringFrame[];
+  frames_by_hour: Record<string, TrajectorySteeringFrame>;
+};
+
+export async function fetchTrajectorySteering(): Promise<TrajectorySteeringFile> {
+  const res = await fetch(trajectorySteeringApiUrl());
+
+  if (!res.ok) {
+    throw new Error(
+      `Trajectory steering fetch failed (${res.status} ${res.statusText})`
+    );
+  }
+
+  return (await res.json()) as TrajectorySteeringFile;
 }
