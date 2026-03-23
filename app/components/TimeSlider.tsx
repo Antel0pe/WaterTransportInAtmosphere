@@ -6,7 +6,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 // Constants
 // -----------------------------
 const START_STR = "2021-11-01T00:00";
-const END_STR = "2021-12-31T23:00";
+const END_STR = "2021-11-30T23:00";
 const MS_PER_HOUR = 3_600_000;
 const COMMIT_DELAY_MS = 100;
 
@@ -143,6 +143,9 @@ export default function TimeSlider({ value, onChange, allReady }: TimeSliderProp
     [setDraftAndSchedule]
   );
 
+  const [isPlaying, setIsPlaying] = useState(false);
+  const playTimerRef = useRef<number | null>(null);
+
   // Keyboard listeners (ArrowLeft/ArrowRight)
   useEffect(() => {
     const isTypingTarget = (el: Element | null) => {
@@ -180,13 +183,6 @@ export default function TimeSlider({ value, onChange, allReady }: TimeSliderProp
     };
   }, [step, commitHours]);
 
-  const [isPlaying, setIsPlaying] = useState(false);
-  const playTimerRef = useRef<number | null>(null);
-
-  // keep latest values in refs to avoid stale closures
-  const allReadyRef = useRef(allReady);
-  useEffect(() => { allReadyRef.current = allReady; }, [allReady]);
-
   const currentHoursRef = useRef(currentHours);
   useEffect(() => { currentHoursRef.current = currentHours; }, [currentHours]);
 
@@ -194,7 +190,7 @@ export default function TimeSlider({ value, onChange, allReady }: TimeSliderProp
     if (!isPlaying) return;
 
     // Don't advance until the scene reports ready for the current timestamp
-    if (!allReadyRef.current) return;
+    if (!allReady) return;
 
     // After ready, wait 200ms, then advance by 1 hour
     playTimerRef.current = window.setTimeout(() => {
@@ -219,7 +215,7 @@ export default function TimeSlider({ value, onChange, allReady }: TimeSliderProp
         playTimerRef.current = null;
       }
     };
-  }, [isPlaying, commitHours]);
+  }, [allReady, isPlaying, commitHours]);
 
 
   // Cleanup any pending timer on unmount
@@ -254,8 +250,15 @@ export default function TimeSlider({ value, onChange, allReady }: TimeSliderProp
 
         <button
           onClick={() => setIsPlaying((p) => !p)}
-          disabled={!allReady}
-          title={allReady ? (isPlaying ? "Pause" : "Play") : "Waiting for render..."}
+          title={
+            isPlaying
+              ? allReady
+                ? "Pause"
+                : "Pause (waiting for render...)"
+              : allReady
+                ? "Play"
+                : "Play (will resume when ready)"
+          }
           aria-label={isPlaying ? "Pause" : "Play"}
           style={{
             width: 34,
@@ -267,8 +270,8 @@ export default function TimeSlider({ value, onChange, allReady }: TimeSliderProp
             display: "inline-flex",
             alignItems: "center",
             justifyContent: "center",
-            cursor: allReady ? "pointer" : "not-allowed",
-            opacity: allReady ? 1 : 0.5,
+            cursor: "pointer",
+            opacity: 1,
             userSelect: "none",
             lineHeight: 1,
             padding: 0,

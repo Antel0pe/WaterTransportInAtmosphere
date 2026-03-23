@@ -3,7 +3,11 @@ import * as THREE from "three";
 import { useEarthLayer } from "./EarthBase";
 import { temperatureApiUrl } from "../utils/ApiResponses";
 import { TemperatureDiffPressure, useControls } from "../../state/controlsStore";
-import { configureDataTexture } from "./shaderUtils";
+import {
+  animateUniform,
+  configureDataTexture,
+  DEFAULT_TEXTURE_FADE_MS,
+} from "./shaderUtils";
 
 const SUPPORTED_LEVELS = [250, 500, 925] as const;
 type SupportedLevel = (typeof SUPPORTED_LEVELS)[number];
@@ -68,15 +72,10 @@ type TemperatureDifferenceParams = ReturnType<
   typeof useControls.getState
 >["temperatureDifference"];
 
-function applyTemperatureDifferenceParams(
+function applyTemperatureDifferenceDisplayParams(
   mat: THREE.ShaderMaterial,
-  p: TemperatureDifferenceParams,
-  level: SupportedLevel
+  p: TemperatureDifferenceParams
 ) {
-  const r = defaultRangeForLevel(level);
-  mat.uniforms.uDataMin.value = r.min;
-  mat.uniforms.uDataMax.value = r.max;
-
   mat.uniforms.uDisplayMin.value = p.uDeltaMin;
   mat.uniforms.uDisplayMax.value = p.uDeltaMax;
   mat.uniforms.uGamma.value = p.uGamma;
@@ -84,21 +83,15 @@ function applyTemperatureDifferenceParams(
   mat.uniforms.uContrast.value = p.uContrast;
 }
 
-function animateFade(
-  ms: number,
-  isCancelled: () => boolean,
-  onUpdate: (t: number) => void,
-  onDone?: () => void
+function applyTemperatureDifferenceLoadedLevelParams(
+  mat: THREE.ShaderMaterial,
+  p: TemperatureDifferenceParams,
+  level: SupportedLevel
 ) {
-  const start = performance.now();
-  function step(now: number) {
-    if (isCancelled()) return;
-    const t = Math.min(1, (now - start) / Math.max(ms, 1));
-    onUpdate(t);
-    if (t < 1) requestAnimationFrame(step);
-    else onDone?.();
-  }
-  requestAnimationFrame(step);
+  const r = defaultRangeForLevel(level);
+  mat.uniforms.uDataMin.value = r.min;
+  mat.uniforms.uDataMax.value = r.max;
+  applyTemperatureDifferenceDisplayParams(mat, p);
 }
 
 function loadTexture(loader: THREE.TextureLoader, url: string): Promise<THREE.Texture> {
@@ -134,18 +127,144 @@ async function loadTemperatureTexturePair(args: {
   }
 }
 
+function getTextureUniform(
+  material: THREE.ShaderMaterial,
+  uniformName: "uTexCurrentA" | "uTexCurrentB" | "uTexPrevA" | "uTexPrevB"
+): { value: THREE.Texture | null } {
+  const uniform = (material.uniforms as Record<string, { value: THREE.Texture | null } | undefined>)[uniformName];
+  if (!uniform) {
+    throw new Error(`Missing shader uniform "${uniformName}"`);
+  }
+  return uniform;
+}
+
+function disposeUniqueTextures(textures: Array<THREE.Texture | null>) {
+  const disposed = new Set<THREE.Texture>();
+  for (const tex of textures) {
+    if (!tex || disposed.has(tex)) continue;
+    disposed.add(tex);
+    tex.dispose();
+  }
+}
+
+function disposeTemperatureDifferenceTextures(material: THREE.ShaderMaterial) {
+  disposeUniqueTextures([
+    getTextureUniform(material, "uTexCurrentA").value,
+    getTextureUniform(material, "uTexCurrentB").value,
+    getTextureUniform(material, "uTexPrevA").value,
+    getTextureUniform(material, "uTexPrevB").value,
+  ]);
+}
+
+function clearTemperatureDifferenceTextures(material: THREE.ShaderMaterial) {
+  getTextureUniform(material, "uTexCurrentA").value = null;
+  getTextureUniform(material, "uTexCurrentB").value = null;
+  getTextureUniform(material, "uTexPrevA").value = null;
+  getTextureUniform(material, "uTexPrevB").value = null;
+  material.uniforms.uMix.value = 0.0;
+  material.needsUpdate = true;
+}
+
+function setTemperatureDifferenceTexturePair(
+  material: THREE.ShaderMaterial,
+  currentTex: THREE.Texture,
+  previousTex: THREE.Texture
+) {
+  getTextureUniform(material, "uTexCurrentA").value = currentTex;
+  getTextureUniform(material, "uTexCurrentB").value = currentTex;
+  getTextureUniform(material, "uTexPrevA").value = previousTex;
+  getTextureUniform(material, "uTexPrevB").value = previousTex;
+  material.uniforms.uMix.value = 0.0;
+  material.needsUpdate = true;
+}
+
+function disposeIfUnkept(
+  tex: THREE.Texture | null,
+  keep: Set<THREE.Texture>,
+  disposed: Set<THREE.Texture>
+) {
+  if (!tex || keep.has(tex) || disposed.has(tex)) return;
+  disposed.add(tex);
+  tex.dispose();
+}
+
+function crossfadeTemperatureDifferenceTextures(args: {
+  material: THREE.ShaderMaterial;
+  nextCurrentTex: THREE.Texture;
+  nextPreviousTex: THREE.Texture;
+  isCancelled: () => boolean;
+  fadeMs?: number;
+}): number | null {
+  const {
+    material,
+    nextCurrentTex,
+    nextPreviousTex,
+    isCancelled,
+    fadeMs = DEFAULT_TEXTURE_FADE_MS,
+  } = args;
+
+  const currentA = getTextureUniform(material, "uTexCurrentA");
+  const currentB = getTextureUniform(material, "uTexCurrentB");
+  const prevA = getTextureUniform(material, "uTexPrevA");
+  const prevB = getTextureUniform(material, "uTexPrevB");
+
+  if (!currentA.value || !prevA.value) {
+    setTemperatureDifferenceTexturePair(material, nextCurrentTex, nextPreviousTex);
+    return null;
+  }
+
+  const keepBefore = new Set<THREE.Texture>([
+    currentA.value,
+    prevA.value,
+    nextCurrentTex,
+    nextPreviousTex,
+  ]);
+  const disposedBefore = new Set<THREE.Texture>();
+  disposeIfUnkept(currentB.value, keepBefore, disposedBefore);
+  disposeIfUnkept(prevB.value, keepBefore, disposedBefore);
+
+  currentB.value = nextCurrentTex;
+  prevB.value = nextPreviousTex;
+  material.uniforms.uMix.value = 0.0;
+  material.needsUpdate = true;
+
+  animateUniform(material, "uMix", 0.0, 1.0, fadeMs, isCancelled);
+
+  return window.setTimeout(() => {
+    if (isCancelled()) return;
+
+    const oldCurrentA = currentA.value;
+    const oldPrevA = prevA.value;
+    const newCurrent = currentB.value;
+    const newPrev = prevB.value;
+
+    currentA.value = newCurrent;
+    prevA.value = newPrev;
+    currentB.value = newCurrent;
+    prevB.value = newPrev;
+    material.uniforms.uMix.value = 0.0;
+    material.needsUpdate = true;
+
+    const keepAfter = new Set<THREE.Texture>();
+    if (newCurrent) keepAfter.add(newCurrent);
+    if (newPrev) keepAfter.add(newPrev);
+
+    const disposedAfter = new Set<THREE.Texture>();
+    disposeIfUnkept(oldCurrentA, keepAfter, disposedAfter);
+    disposeIfUnkept(oldPrevA, keepAfter, disposedAfter);
+  }, fadeMs + 20);
+}
+
 export default function TemperatureDifferenceLayer() {
   const { engineReady, sceneRef, globeRef, timestamp, signalReady } =
     useEarthLayer("temperature-difference");
 
   const pressureLevel = useControls((st) => st.temperatureDifference.pressureLevel);
 
-  const meshARef = useRef<THREE.Mesh | null>(null);
-  const meshBRef = useRef<THREE.Mesh | null>(null);
-
-  const activeRef = useRef<"A" | "B">("A");
+  const meshRef = useRef<THREE.Mesh | null>(null);
   const reqIdRef = useRef(0);
   const pendingRef = useRef<TemperatureDifferenceParams | null>(null);
+  const hasContentRef = useRef(false);
 
   useEffect(() => {
     if (!engineReady) return;
@@ -157,38 +276,41 @@ export default function TemperatureDifferenceLayer() {
 
     const R = 100;
     const LIFT = R * 0.0029;
-    const EPS = R * 0.00002;
-    const geomA = new THREE.SphereGeometry(R + LIFT, 128, 128);
-    const geomB = new THREE.SphereGeometry(R + LIFT + EPS, 128, 128);
+    const geom = new THREE.SphereGeometry(R + LIFT, 128, 128);
 
-    const makeMaterial = () =>
-      new THREE.ShaderMaterial({
-        transparent: true,
-        depthWrite: false,
-        depthTest: true,
-        uniforms: {
-          uTexCurrent: { value: null as THREE.Texture | null },
-          uTexPrev: { value: null as THREE.Texture | null },
-          uLonOffset: { value: 0.25 },
-          uDataMin: { value: 0 },
-          uDataMax: { value: 1 },
-          uDisplayMin: { value: s.temperatureDifference.uDeltaMin },
-          uDisplayMax: { value: s.temperatureDifference.uDeltaMax },
-          uGamma: { value: s.temperatureDifference.uGamma },
-          uAlpha: { value: s.temperatureDifference.uAlpha },
-          uContrast: { value: s.temperatureDifference.uContrast },
-          uLayerOpacity: { value: 1.0 },
-        },
-        vertexShader: `
-          varying vec2 vUv;
-          void main() {
-            vUv = uv;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `,
-        fragmentShader: `
-uniform sampler2D uTexCurrent;
-uniform sampler2D uTexPrev;
+    const mat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      uniforms: {
+        uTexCurrentA: { value: null as THREE.Texture | null },
+        uTexCurrentB: { value: null as THREE.Texture | null },
+        uTexPrevA: { value: null as THREE.Texture | null },
+        uTexPrevB: { value: null as THREE.Texture | null },
+        uMix: { value: 0.0 },
+        uLonOffset: { value: 0.25 },
+        uDataMin: { value: 0 },
+        uDataMax: { value: 1 },
+        uDisplayMin: { value: s.temperatureDifference.uDeltaMin },
+        uDisplayMax: { value: s.temperatureDifference.uDeltaMax },
+        uGamma: { value: s.temperatureDifference.uGamma },
+        uAlpha: { value: s.temperatureDifference.uAlpha },
+        uContrast: { value: s.temperatureDifference.uContrast },
+        uLayerOpacity: { value: 1.0 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+uniform sampler2D uTexCurrentA;
+uniform sampler2D uTexCurrentB;
+uniform sampler2D uTexPrevA;
+uniform sampler2D uTexPrevB;
+uniform float uMix;
 uniform float uLonOffset;
 uniform float uDataMin;
 uniform float uDataMax;
@@ -214,8 +336,14 @@ void main() {
   vec2 uv = vUv;
   uv.x = fract(uv.x + uLonOffset);
 
-  float xCurrent = texture2D(uTexCurrent, uv).r;
-  float xPrev = texture2D(uTexPrev, uv).r;
+  float xCurrentA = texture2D(uTexCurrentA, uv).r;
+  float xCurrentB = texture2D(uTexCurrentB, uv).r;
+  float xPrevA = texture2D(uTexPrevA, uv).r;
+  float xPrevB = texture2D(uTexPrevB, uv).r;
+
+  float currentMix = clamp(uMix, 0.0, 1.0);
+  float xCurrent = mix(xCurrentA, xCurrentB, currentMix);
+  float xPrev = mix(xPrevA, xPrevB, currentMix);
 
   float tempCurrentK = mix(uDataMin, uDataMax, xCurrent);
   float tempPrevK = mix(uDataMin, uDataMax, xPrev);
@@ -233,61 +361,33 @@ void main() {
   float alpha = clamp(uAlpha, 0.0, 1.0) * clamp(uLayerOpacity, 0.0, 1.0);
   gl_FragColor = vec4(col, alpha);
 }
-        `,
-      });
+      `,
+    });
 
-    const matA = makeMaterial();
-    const matB = makeMaterial();
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.name = "temperature-difference-layer";
+    mesh.renderOrder = 61;
+    mesh.frustumCulled = false;
+    mesh.visible = s.temperatureDifference.pressureLevel !== "none" && hasContentRef.current;
 
-    const meshA = new THREE.Mesh(geomA, matA);
-    meshA.name = "temperature-difference-layer-A";
-    meshA.renderOrder = 61;
-    meshA.frustumCulled = false;
-
-    const meshB = new THREE.Mesh(geomB, matB);
-    meshB.name = "temperature-difference-layer-B";
-    meshB.renderOrder = 62;
-    meshB.frustumCulled = false;
-
-    matB.uniforms.uLayerOpacity.value = 0.0;
-
-    const visible = s.temperatureDifference.pressureLevel !== "none";
-    meshA.visible = visible;
-    meshB.visible = visible;
-
-    scene.add(meshA);
-    scene.add(meshB);
-
-    meshARef.current = meshA;
-    meshBRef.current = meshB;
-    activeRef.current = "A";
+    scene.add(mesh);
+    meshRef.current = mesh;
 
     return () => {
-      meshARef.current = null;
-      meshBRef.current = null;
+      meshRef.current = null;
 
-      meshA.removeFromParent();
-      meshB.removeFromParent();
+      mesh.removeFromParent();
+      geom.dispose();
 
-      geomA.dispose();
-      geomB.dispose();
-
-      for (const mesh of [meshA, meshB]) {
-        const mat = mesh.material as THREE.ShaderMaterial;
-        const texCurrent = mat.uniforms.uTexCurrent.value as THREE.Texture | null;
-        const texPrev = mat.uniforms.uTexPrev.value as THREE.Texture | null;
-        if (texCurrent) texCurrent.dispose();
-        if (texPrev && texPrev !== texCurrent) texPrev.dispose();
-        mat.dispose();
-      }
+      disposeTemperatureDifferenceTextures(mat);
+      mat.dispose();
     };
   }, [engineReady, globeRef, sceneRef]);
 
   useEffect(() => {
     if (!engineReady) return;
-    const meshA = meshARef.current;
-    const meshB = meshBRef.current;
-    if (!meshA || !meshB) return;
+    const mesh = meshRef.current;
+    if (!mesh) return;
 
     pendingRef.current = useControls.getState().temperatureDifference;
 
@@ -295,9 +395,13 @@ void main() {
       (st) => st.temperatureDifference,
       (p) => {
         pendingRef.current = p;
-        const vis = p.pressureLevel !== "none";
-        meshA.visible = vis;
-        meshB.visible = vis;
+        mesh.visible = p.pressureLevel !== "none" && hasContentRef.current;
+        if (hasContentRef.current) {
+          applyTemperatureDifferenceDisplayParams(
+            mesh.material as THREE.ShaderMaterial,
+            p
+          );
+        }
       }
     );
 
@@ -308,9 +412,10 @@ void main() {
 
   useEffect(() => {
     if (!engineReady) return;
-    const meshA = meshARef.current;
-    const meshB = meshBRef.current;
-    if (!meshA || !meshB) return;
+    const mesh = meshRef.current;
+    if (!mesh) return;
+
+    const mat = mesh.material as THREE.ShaderMaterial;
 
     let cancelled = false;
     const myReqId = ++reqIdRef.current;
@@ -319,23 +424,18 @@ void main() {
     const level = resolveLevel(pressureLevel);
 
     if (level === null) {
-      meshA.visible = false;
-      meshB.visible = false;
+      hasContentRef.current = false;
+      mesh.visible = false;
+      disposeTemperatureDifferenceTextures(mat);
+      clearTemperatureDifferenceTextures(mat);
+      mat.uniforms.uLayerOpacity.value = 0.0;
       signalReady(timestamp);
       return () => {
         cancelled = true;
       };
     }
 
-    meshA.visible = true;
-    meshB.visible = true;
-
-    const activeKey = activeRef.current;
-    const activeMesh = activeKey === "A" ? meshA : meshB;
-    const nextMesh = activeKey === "A" ? meshB : meshA;
-
-    const activeMat = activeMesh.material as THREE.ShaderMaterial;
-    const nextMat = nextMesh.material as THREE.ShaderMaterial;
+    mesh.visible = hasContentRef.current;
 
     const currentUrl = temperatureApiUrl(timestamp, level);
     const previousTimestamp = oneHourBackTimestamp(timestamp);
@@ -356,44 +456,37 @@ void main() {
         if (previousTex !== currentTex) configureDataTexture(previousTex);
 
         const latest = pendingRef.current ?? useControls.getState().temperatureDifference;
-        applyTemperatureDifferenceParams(nextMat, latest, level);
+        applyTemperatureDifferenceLoadedLevelParams(mat, latest, level);
 
-        const prevNextCurrentTex = nextMat.uniforms.uTexCurrent.value as THREE.Texture | null;
-        const prevNextPrevTex = nextMat.uniforms.uTexPrev.value as THREE.Texture | null;
-        nextMat.uniforms.uTexCurrent.value = currentTex;
-        nextMat.uniforms.uTexPrev.value = previousTex;
-        nextMat.needsUpdate = true;
-        if (prevNextCurrentTex) prevNextCurrentTex.dispose();
-        if (prevNextPrevTex && prevNextPrevTex !== prevNextCurrentTex) {
-          prevNextPrevTex.dispose();
+        const hadVisibleContent = hasContentRef.current;
+        hasContentRef.current = true;
+        mesh.visible = true;
+
+        if (!hadVisibleContent) {
+          disposeTemperatureDifferenceTextures(mat);
+          setTemperatureDifferenceTexturePair(mat, currentTex, previousTex);
+          mat.uniforms.uLayerOpacity.value = 0.0;
+
+          animateUniform(mat, "uLayerOpacity", 0.0, 1.0, 220, isCancelled);
+          signalReady(timestamp);
+          return;
         }
 
-        nextMat.uniforms.uLayerOpacity.value = 0.0;
-        activeMat.uniforms.uLayerOpacity.value = 1.0;
-
-        const FADE_MS = 220;
-
-        animateFade(
-          FADE_MS,
+        mat.uniforms.uLayerOpacity.value = 1.0;
+        crossfadeTemperatureDifferenceTextures({
+          material: mat,
+          nextCurrentTex: currentTex,
+          nextPreviousTex: previousTex,
           isCancelled,
-          (t) => {
-            activeMat.uniforms.uLayerOpacity.value = 1.0 - t;
-            nextMat.uniforms.uLayerOpacity.value = t;
-          },
-          () => {
-            if (isCancelled()) return;
-
-            activeRef.current = activeKey === "A" ? "B" : "A";
-            activeMat.uniforms.uLayerOpacity.value = 0.0;
-            nextMat.uniforms.uLayerOpacity.value = 1.0;
-          }
-        );
-
+        });
         signalReady(timestamp);
       })
       .catch((err) => {
         if (isCancelled()) return;
         console.error("Failed to load temperature difference pngs", err);
+        if (!hasContentRef.current) {
+          mesh.visible = false;
+        }
         signalReady(timestamp);
       });
 

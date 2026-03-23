@@ -8,6 +8,13 @@ import { latLonToVec3 } from "../utils/EarthUtils";
 
 type ContoursPressure = ReturnType<typeof useControls.getState>["contoursPressure"];
 type PressureNonNone = Exclude<ContoursPressure, "none">;
+type ContoursStyle = ReturnType<typeof useControls.getState>["mslContours"];
+type ContoursSlice = {
+  group: THREE.Group;
+  mats: Map<string, THREE.LineBasicMaterial>;
+  minHpa: number;
+  maxHpa: number;
+};
 
 function animateT(
   ms: number,
@@ -40,6 +47,13 @@ function disposeMaterialCache(cache: Map<string, THREE.LineBasicMaterial>) {
   cache.clear();
 }
 
+function disposeSlice(slice: ContoursSlice | null) {
+  if (!slice) return;
+  disposeGroupLines(slice.group);
+  slice.group.removeFromParent();
+  disposeMaterialCache(slice.mats);
+}
+
 function computeMinMaxHpa(
   file: MslContoursFile,
   pressure: PressureNonNone
@@ -67,10 +81,13 @@ function computeMinMaxHpa(
 function levelToColor(
   levelHpa: number,
   minHpa: number,
-  maxHpa: number
+  maxHpa: number,
+  contrast: number
 ): THREE.Color {
   let t = (levelHpa - minHpa) / (maxHpa - minHpa);
   t = THREE.MathUtils.clamp(t, 0, 1);
+  const width = 0.5 / Math.max(contrast, 1e-6);
+  t = THREE.MathUtils.smoothstep(t, 0.5 - width, 0.5 + width);
 
   const red = new THREE.Color(1.0, 0.0, 0.35);
   const green = new THREE.Color(0.0, 1.0, 0.15);
@@ -82,9 +99,10 @@ function buildContoursGroup(opts: {
   pressure: PressureNonNone;
   R: number;
   opacity: number;
+  contrast: number;
   renderOrder: number;
-}): { group: THREE.Group; mats: Map<string, THREE.LineBasicMaterial> } {
-  const { file, pressure, R, opacity, renderOrder } = opts;
+}): ContoursSlice {
+  const { file, pressure, R, opacity, contrast, renderOrder } = opts;
 
   const g = new THREE.Group();
   g.name = "msl-contours-slice";
@@ -103,7 +121,7 @@ function buildContoursGroup(opts: {
     if (cached) return cached;
 
     const levelHpa = parseFloat(levelKey);
-    const col = levelToColor(levelHpa, min, max);
+      const col = levelToColor(levelHpa, min, max, contrast);
 
     const mat = new THREE.LineBasicMaterial({
       transparent: true,
@@ -146,11 +164,25 @@ function buildContoursGroup(opts: {
     }
   }
 
-  return { group: g, mats };
+  return { group: g, mats, minHpa: min, maxHpa: max };
 }
 
 function setMaterialsOpacity(mats: Map<string, THREE.LineBasicMaterial>, opacity: number) {
   for (const m of mats.values()) m.opacity = opacity;
+}
+
+function setSliceOpacity(slice: ContoursSlice | null, opacity: number) {
+  if (!slice) return;
+  setMaterialsOpacity(slice.mats, opacity);
+}
+
+function setSliceContrast(slice: ContoursSlice | null, contrast: number) {
+  if (!slice) return;
+  for (const [levelKey, mat] of slice.mats.entries()) {
+    const levelHpa = Number(levelKey);
+    if (!Number.isFinite(levelHpa)) continue;
+    mat.color.copy(levelToColor(levelHpa, slice.minHpa, slice.maxHpa, contrast));
+  }
 }
 
 export default function MslContoursLayer() {
@@ -164,10 +196,24 @@ export default function MslContoursLayer() {
   const rootRef = useRef<THREE.Group | null>(null);
 
   // Current visible slice (group + mats cache).
-  const currentRef = useRef<{
-    group: THREE.Group;
-    mats: Map<string, THREE.LineBasicMaterial>;
-  } | null>(null);
+  const currentRef = useRef<ContoursSlice | null>(null);
+  const transitionRef = useRef<ContoursSlice | null>(null);
+  const styleRef = useRef<ContoursStyle>(useControls.getState().mslContours);
+  const fadeMixRef = useRef<number | null>(null);
+
+  const applyVisibleOpacity = (targetOpacity: number) => {
+    const mix = fadeMixRef.current;
+    const current = currentRef.current;
+    const transition = transitionRef.current;
+
+    if (transition && mix !== null) {
+      if (current) setSliceOpacity(current, targetOpacity * (1 - mix));
+      setSliceOpacity(transition, targetOpacity * mix);
+      return;
+    }
+
+    setSliceOpacity(current, targetOpacity);
+  };
 
   // latest-request-wins
   const reqIdRef = useRef(0);
@@ -185,6 +231,7 @@ export default function MslContoursLayer() {
 
     const s = useControls.getState();
     root.visible = s.contoursPressure !== "none";
+    styleRef.current = s.mslContours;
 
     scene.add(root);
     rootRef.current = root;
@@ -196,17 +243,26 @@ export default function MslContoursLayer() {
       }
     );
 
+    const unsubStyle = useControls.subscribe(
+      (st) => st.mslContours,
+      (p) => {
+        styleRef.current = p;
+        setSliceContrast(currentRef.current, p.contrast);
+        setSliceContrast(transitionRef.current, p.contrast);
+        applyVisibleOpacity(p.opacity);
+      }
+    );
+
     return () => {
       unsubVis();
+      unsubStyle();
 
       // dispose current slice
-      const cur = currentRef.current;
-      if (cur) {
-        disposeGroupLines(cur.group);
-        cur.group.removeFromParent();
-        disposeMaterialCache(cur.mats);
-        currentRef.current = null;
-      }
+      disposeSlice(transitionRef.current);
+      transitionRef.current = null;
+      fadeMixRef.current = null;
+      disposeSlice(currentRef.current);
+      currentRef.current = null;
 
       rootRef.current = null;
       root.removeFromParent();
@@ -225,13 +281,11 @@ export default function MslContoursLayer() {
     if (contoursPressure === "none") {
       // Hide is handled by root.visible subscription; we can still clear geometry
       // but do it without flashing: just dispose current.
-      const cur = currentRef.current;
-      if (cur) {
-        disposeGroupLines(cur.group);
-        cur.group.removeFromParent();
-        disposeMaterialCache(cur.mats);
-        currentRef.current = null;
-      }
+      disposeSlice(transitionRef.current);
+      transitionRef.current = null;
+      fadeMixRef.current = null;
+      disposeSlice(currentRef.current);
+      currentRef.current = null;
       signalReady(timestamp);
       return () => {
         cancelled = true;
@@ -240,8 +294,7 @@ export default function MslContoursLayer() {
 
     (async () => {
       try {
-        const s = useControls.getState();
-        const targetOpacity = s.mslContours.opacity;
+        const style = styleRef.current;
 
         const file = await fetchMslContours(timestamp, contoursPressure);
         if (isCancelled()) return;
@@ -254,11 +307,13 @@ export default function MslContoursLayer() {
           pressure: contoursPressure,
           R,
           opacity: 0.0, // start invisible
+          contrast: style.contrast,
           renderOrder: 60,
         });
 
         // Attach new slice immediately (but invisible)
         root.add(next.group);
+        transitionRef.current = next;
 
         // Crossfade current -> next
         const prev = currentRef.current;
@@ -266,36 +321,34 @@ export default function MslContoursLayer() {
         const FADE_MS = 220;
 
         // ensure prev is at full opacity when starting fade
-        if (prev) setMaterialsOpacity(prev.mats, targetOpacity);
+        if (prev) setSliceContrast(prev, styleRef.current.contrast);
+        fadeMixRef.current = 0;
+        applyVisibleOpacity(styleRef.current.opacity);
 
         animateT(
           FADE_MS,
           isCancelled,
           (t) => {
-            const a = targetOpacity * (1 - t);
-            const b = targetOpacity * t;
-
-            if (prev) setMaterialsOpacity(prev.mats, a);
-            setMaterialsOpacity(next.mats, b);
+            fadeMixRef.current = t;
+            applyVisibleOpacity(styleRef.current.opacity);
           },
           () => {
             if (isCancelled()) {
               // if cancelled after fade, keep things consistent by disposing "next"
-              disposeGroupLines(next.group);
-              next.group.removeFromParent();
-              disposeMaterialCache(next.mats);
+              if (transitionRef.current === next) transitionRef.current = null;
+              fadeMixRef.current = null;
+              disposeSlice(next);
               return;
             }
 
             // Commit: dispose prev slice
-            if (prev) {
-              disposeGroupLines(prev.group);
-              prev.group.removeFromParent();
-              disposeMaterialCache(prev.mats);
-            }
+            disposeSlice(prev);
 
             // Keep next as current
             currentRef.current = next;
+            if (transitionRef.current === next) transitionRef.current = null;
+            fadeMixRef.current = null;
+            applyVisibleOpacity(styleRef.current.opacity);
           }
         );
 
@@ -310,6 +363,11 @@ export default function MslContoursLayer() {
 
     return () => {
       cancelled = true;
+      if (transitionRef.current) {
+        disposeSlice(transitionRef.current);
+        transitionRef.current = null;
+      }
+      fadeMixRef.current = null;
     };
   }, [engineReady, timestamp, signalReady, contoursPressure]);
 

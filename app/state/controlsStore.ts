@@ -201,7 +201,7 @@ export const useControls = create<ControlsState>()(
     },
 
     mslContours: {
-      contrast: 3.5,
+      contrast: 2.0,
       opacity: 0.95,
     },
     trajectorySteeringStyle: {

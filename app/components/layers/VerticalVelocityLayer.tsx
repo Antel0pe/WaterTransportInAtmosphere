@@ -3,7 +3,12 @@ import * as THREE from "three";
 import { useEarthLayer } from "./EarthBase";
 import { verticalVelocityApiUrl } from "../utils/ApiResponses";
 import { VerticalVelocityPressure, useControls } from "../../state/controlsStore";
-import { configureDataTexture } from "./shaderUtils";
+import {
+  animateUniform,
+  configureDataTexture,
+  crossfadeTextureUniforms,
+  disposeCrossfadeTextures,
+} from "./shaderUtils";
 
 const SUPPORTED_LEVELS = [250, 500, 925] as const;
 type SupportedLevel = (typeof SUPPORTED_LEVELS)[number];
@@ -21,15 +26,10 @@ function resolveLevel(pressure: VerticalVelocityPressure): SupportedLevel | null
 
 type VerticalVelocityParams = ReturnType<typeof useControls.getState>["verticalVelocity"];
 
-function applyVerticalVelocityParams(
+function applyVerticalVelocityDisplayParams(
   mat: THREE.ShaderMaterial,
-  p: VerticalVelocityParams,
-  level: SupportedLevel
+  p: VerticalVelocityParams
 ) {
-  const r = defaultRangeForLevel(level);
-  mat.uniforms.uDataMin.value = r.min;
-  mat.uniforms.uDataMax.value = r.max;
-
   mat.uniforms.uDisplayMin.value = p.uWMin;
   mat.uniforms.uDisplayMax.value = p.uWMax;
   mat.uniforms.uGamma.value = p.uGamma;
@@ -38,21 +38,15 @@ function applyVerticalVelocityParams(
   mat.uniforms.uAsinhK.value = p.uAsinhK;
 }
 
-function animateFade(
-  ms: number,
-  isCancelled: () => boolean,
-  onUpdate: (t: number) => void,
-  onDone?: () => void
+function applyVerticalVelocityLoadedLevelParams(
+  mat: THREE.ShaderMaterial,
+  p: VerticalVelocityParams,
+  level: SupportedLevel
 ) {
-  const start = performance.now();
-  function step(now: number) {
-    if (isCancelled()) return;
-    const t = Math.min(1, (now - start) / Math.max(ms, 1));
-    onUpdate(t);
-    if (t < 1) requestAnimationFrame(step);
-    else onDone?.();
-  }
-  requestAnimationFrame(step);
+  const r = defaultRangeForLevel(level);
+  mat.uniforms.uDataMin.value = r.min;
+  mat.uniforms.uDataMax.value = r.max;
+  applyVerticalVelocityDisplayParams(mat, p);
 }
 
 export default function VerticalVelocityLayer() {
@@ -61,12 +55,10 @@ export default function VerticalVelocityLayer() {
 
   const pressureLevel = useControls((st) => st.verticalVelocity.pressureLevel);
 
-  const meshARef = useRef<THREE.Mesh | null>(null);
-  const meshBRef = useRef<THREE.Mesh | null>(null);
-
-  const activeRef = useRef<"A" | "B">("A");
+  const meshRef = useRef<THREE.Mesh | null>(null);
   const reqIdRef = useRef(0);
   const pendingRef = useRef<VerticalVelocityParams | null>(null);
+  const hasContentRef = useRef(false);
 
   useEffect(() => {
     if (!engineReady) return;
@@ -80,33 +72,36 @@ export default function VerticalVelocityLayer() {
     const LIFT = R * 0.0026;
     const geom = new THREE.SphereGeometry(R + LIFT, 128, 128);
 
-    const makeMaterial = () =>
-      new THREE.ShaderMaterial({
-        transparent: true,
-        depthWrite: false,
-        depthTest: true,
-        uniforms: {
-          uTex: { value: null as THREE.Texture | null },
-          uLonOffset: { value: 0.25 },
-          uDataMin: { value: 0 },
-          uDataMax: { value: 1 },
-          uDisplayMin: { value: s.verticalVelocity.uWMin },
-          uDisplayMax: { value: s.verticalVelocity.uWMax },
-          uGamma: { value: s.verticalVelocity.uGamma },
-          uAlpha: { value: s.verticalVelocity.uAlpha },
-          uZeroEps: { value: s.verticalVelocity.uZeroEps },
-          uAsinhK: { value: s.verticalVelocity.uAsinhK },
-          uLayerOpacity: { value: 1.0 },
-        },
-        vertexShader: `
-          varying vec2 vUv;
-          void main() {
-            vUv = uv;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `,
-        fragmentShader: `
-uniform sampler2D uTex;
+    const mat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      uniforms: {
+        uTexA: { value: null as THREE.Texture | null },
+        uTexB: { value: null as THREE.Texture | null },
+        uMix: { value: 0.0 },
+        uLonOffset: { value: 0.25 },
+        uDataMin: { value: 0 },
+        uDataMax: { value: 1 },
+        uDisplayMin: { value: s.verticalVelocity.uWMin },
+        uDisplayMax: { value: s.verticalVelocity.uWMax },
+        uGamma: { value: s.verticalVelocity.uGamma },
+        uAlpha: { value: s.verticalVelocity.uAlpha },
+        uZeroEps: { value: s.verticalVelocity.uZeroEps },
+        uAsinhK: { value: s.verticalVelocity.uAsinhK },
+        uLayerOpacity: { value: 1.0 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+uniform sampler2D uTexA;
+uniform sampler2D uTexB;
+uniform float uMix;
 uniform float uLonOffset;
 uniform float uDataMin;
 uniform float uDataMax;
@@ -135,7 +130,9 @@ void main() {
   vec2 uv = vUv;
   uv.x = fract(uv.x + uLonOffset);
 
-  float x = texture2D(uTex, uv).r;
+  float xA = texture2D(uTexA, uv).r;
+  float xB = texture2D(uTexB, uv).r;
+  float x = mix(xA, xB, clamp(uMix, 0.0, 1.0));
   float value = mix(uDataMin, uDataMax, x);
 
   float v = clamp(value, uDisplayMin, uDisplayMax);
@@ -162,57 +159,33 @@ void main() {
 
   gl_FragColor = vec4(col, a);
 }
-        `,
-      });
+      `,
+    });
 
-    const matA = makeMaterial();
-    const matB = makeMaterial();
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.name = "vertical-velocity-layer";
+    mesh.renderOrder = 58;
+    mesh.frustumCulled = false;
+    mesh.visible = s.verticalVelocity.pressureLevel !== "none" && hasContentRef.current;
 
-    const meshA = new THREE.Mesh(geom, matA);
-    meshA.name = "vertical-velocity-layer-A";
-    meshA.renderOrder = 58;
-    meshA.frustumCulled = false;
-
-    const meshB = new THREE.Mesh(geom, matB);
-    meshB.name = "vertical-velocity-layer-B";
-    meshB.renderOrder = 58;
-    meshB.frustumCulled = false;
-
-    matB.uniforms.uLayerOpacity.value = 0.0;
-
-    const visible = s.verticalVelocity.pressureLevel !== "none";
-    meshA.visible = visible;
-    meshB.visible = visible;
-
-    scene.add(meshA);
-    scene.add(meshB);
-
-    meshARef.current = meshA;
-    meshBRef.current = meshB;
-    activeRef.current = "A";
+    scene.add(mesh);
+    meshRef.current = mesh;
 
     return () => {
-      meshARef.current = null;
-      meshBRef.current = null;
+      meshRef.current = null;
 
-      meshA.removeFromParent();
-      meshB.removeFromParent();
+      mesh.removeFromParent();
       geom.dispose();
 
-      for (const mesh of [meshA, meshB]) {
-        const mat = mesh.material as THREE.ShaderMaterial;
-        const tex = mat.uniforms.uTex.value as THREE.Texture | null;
-        if (tex) tex.dispose();
-        mat.dispose();
-      }
+      disposeCrossfadeTextures(mat);
+      mat.dispose();
     };
   }, [engineReady, globeRef, sceneRef]);
 
   useEffect(() => {
     if (!engineReady) return;
-    const meshA = meshARef.current;
-    const meshB = meshBRef.current;
-    if (!meshA || !meshB) return;
+    const mesh = meshRef.current;
+    if (!mesh) return;
 
     pendingRef.current = useControls.getState().verticalVelocity;
 
@@ -220,9 +193,13 @@ void main() {
       (st) => st.verticalVelocity,
       (p) => {
         pendingRef.current = p;
-        const vis = p.pressureLevel !== "none";
-        meshA.visible = vis;
-        meshB.visible = vis;
+        mesh.visible = p.pressureLevel !== "none" && hasContentRef.current;
+        if (hasContentRef.current) {
+          applyVerticalVelocityDisplayParams(
+            mesh.material as THREE.ShaderMaterial,
+            p
+          );
+        }
       }
     );
 
@@ -233,9 +210,10 @@ void main() {
 
   useEffect(() => {
     if (!engineReady) return;
-    const meshA = meshARef.current;
-    const meshB = meshBRef.current;
-    if (!meshA || !meshB) return;
+    const mesh = meshRef.current;
+    if (!mesh) return;
+
+    const mat = mesh.material as THREE.ShaderMaterial;
 
     let cancelled = false;
     const myReqId = ++reqIdRef.current;
@@ -244,23 +222,21 @@ void main() {
     const level = resolveLevel(pressureLevel);
 
     if (level === null) {
-      meshA.visible = false;
-      meshB.visible = false;
+      hasContentRef.current = false;
+      mesh.visible = false;
+      disposeCrossfadeTextures(mat);
+      mat.uniforms.uTexA.value = null;
+      mat.uniforms.uTexB.value = null;
+      mat.uniforms.uMix.value = 0.0;
+      mat.uniforms.uLayerOpacity.value = 0.0;
+      mat.needsUpdate = true;
       signalReady(timestamp);
       return () => {
         cancelled = true;
       };
     }
 
-    meshA.visible = true;
-    meshB.visible = true;
-
-    const activeKey = activeRef.current;
-    const activeMesh = activeKey === "A" ? meshA : meshB;
-    const nextMesh = activeKey === "A" ? meshB : meshA;
-
-    const activeMat = activeMesh.material as THREE.ShaderMaterial;
-    const nextMat = nextMesh.material as THREE.ShaderMaterial;
+    mesh.visible = hasContentRef.current;
 
     const url = verticalVelocityApiUrl(timestamp, level);
 
@@ -275,40 +251,40 @@ void main() {
         configureDataTexture(tex);
 
         const latest = pendingRef.current ?? useControls.getState().verticalVelocity;
-        applyVerticalVelocityParams(nextMat, latest, level);
+        applyVerticalVelocityLoadedLevelParams(mat, latest, level);
 
-        const prevNextTex = nextMat.uniforms.uTex.value as THREE.Texture | null;
-        nextMat.uniforms.uTex.value = tex;
-        nextMat.needsUpdate = true;
-        if (prevNextTex) prevNextTex.dispose();
+        const hadVisibleContent = hasContentRef.current;
+        hasContentRef.current = true;
+        mesh.visible = true;
 
-        nextMat.uniforms.uLayerOpacity.value = 0.0;
-        activeMat.uniforms.uLayerOpacity.value = 1.0;
+        if (!hadVisibleContent) {
+          disposeCrossfadeTextures(mat);
+          mat.uniforms.uTexA.value = tex;
+          mat.uniforms.uTexB.value = tex;
+          mat.uniforms.uMix.value = 0.0;
+          mat.uniforms.uLayerOpacity.value = 0.0;
+          mat.needsUpdate = true;
 
-        const FADE_MS = 220;
+          animateUniform(mat, "uLayerOpacity", 0.0, 1.0, 220, isCancelled);
+          signalReady(timestamp);
+          return;
+        }
 
-        animateFade(
-          FADE_MS,
+        mat.uniforms.uLayerOpacity.value = 1.0;
+        crossfadeTextureUniforms({
+          material: mat,
+          nextTexture: tex,
           isCancelled,
-          (t) => {
-            activeMat.uniforms.uLayerOpacity.value = 1.0 - t;
-            nextMat.uniforms.uLayerOpacity.value = t;
-          },
-          () => {
-            if (isCancelled()) return;
-
-            activeRef.current = activeKey === "A" ? "B" : "A";
-            activeMat.uniforms.uLayerOpacity.value = 0.0;
-            nextMat.uniforms.uLayerOpacity.value = 1.0;
-          }
-        );
-
+        });
         signalReady(timestamp);
       },
       undefined,
       (err) => {
         if (isCancelled()) return;
         console.error("Failed to load vertical velocity png", err);
+        if (!hasContentRef.current) {
+          mesh.visible = false;
+        }
         signalReady(timestamp);
       }
     );

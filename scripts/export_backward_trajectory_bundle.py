@@ -15,7 +15,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
-from tqdm.auto import tqdm
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+    def tqdm(iterable=None, **_: Any):  # type: ignore[no-redef]
+        return iterable
 
 G0 = 9.80665
 GRAD_STEP_KM = 35.0
@@ -1311,9 +1316,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--start-lat", type=float, default=49.28)
     parser.add_argument("--start-lon", type=float, default=-123.12)
-    parser.add_argument("--start-time", type=str, default="2021-11-12T15:00:00")
+    parser.add_argument("--start-time", type=str, default="2021-11-16T12:00:00")
     parser.add_argument("--pressure-level", type=int, default=925)
-    parser.add_argument("--hours-back", type=int, default=100)
+    parser.add_argument("--hours-back", type=int, default=198)
     parser.add_argument("--substeps", type=int, default=4)
     parser.add_argument("--contour-min-m", type=float, default=560.0)
     parser.add_argument("--contour-max-m", type=float, default=940.0)

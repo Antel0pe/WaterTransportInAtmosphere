@@ -4,7 +4,12 @@ import * as THREE from "three";
 import { useEarthLayer } from "./EarthBase";
 import { totalColumnWaterApiUrl } from "../utils/ApiResponses";
 import { useControls } from "../../state/controlsStore";
-import { configureDataTexture } from "./shaderUtils";
+import {
+  animateUniform,
+  configureDataTexture,
+  crossfadeTextureUniforms,
+  disposeCrossfadeTextures,
+} from "./shaderUtils";
 
 type MoistureParams = ReturnType<typeof useControls.getState>["moisture"];
 
@@ -15,33 +20,15 @@ function applyMoistureParams(mat: THREE.ShaderMaterial, p: MoistureParams) {
   mat.uniforms.uGamma.value = p.uGamma;
 }
 
-function animateFade(
-  ms: number,
-  isCancelled: () => boolean,
-  onUpdate: (t: number) => void,
-  onDone?: () => void
-) {
-  const start = performance.now();
-  function step(now: number) {
-    if (isCancelled()) return;
-    const t = Math.min(1, (now - start) / Math.max(ms, 1));
-    onUpdate(t);
-    if (t < 1) requestAnimationFrame(step);
-    else onDone?.();
-  }
-  requestAnimationFrame(step);
-}
-
 export default function MoistureTransportLayer() {
   const { engineReady, sceneRef, globeRef, timestamp, signalReady } =
     useEarthLayer("moisture-transport");
+  const enabled = useControls((st) => st.layers.moisture);
 
-  const meshARef = useRef<THREE.Mesh | null>(null);
-  const meshBRef = useRef<THREE.Mesh | null>(null);
-
-  const activeRef = useRef<"A" | "B">("A");
+  const meshRef = useRef<THREE.Mesh | null>(null);
   const reqIdRef = useRef(0);
   const pendingRef = useRef<MoistureParams | null>(null);
+  const hasContentRef = useRef(false);
 
   useEffect(() => {
     if (!engineReady) return;
@@ -56,29 +43,32 @@ export default function MoistureTransportLayer() {
     const s = useControls.getState();
     pendingRef.current = s.moisture;
 
-    const makeMaterial = () =>
-      new THREE.ShaderMaterial({
-        transparent: true,
-        depthWrite: false,
-        depthTest: true,
-        uniforms: {
-          uTex: { value: null as THREE.Texture | null },
-          uLonOffset: { value: 0.25 },
-          uAnomMin: { value: s.moisture.uAnomMin },
-          uAnomMax: { value: s.moisture.uAnomMax },
-          uThreshold: { value: s.moisture.uThreshold },
-          uGamma: { value: s.moisture.uGamma },
-          uLayerOpacity: { value: 1.0 },
-        },
-        vertexShader: `
-          varying vec2 vUv;
-          void main() {
-            vUv = uv;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `,
-        fragmentShader: `
-uniform sampler2D uTex;
+    const mat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      uniforms: {
+        uTexA: { value: null as THREE.Texture | null },
+        uTexB: { value: null as THREE.Texture | null },
+        uMix: { value: 0.0 },
+        uLonOffset: { value: 0.25 },
+        uAnomMin: { value: s.moisture.uAnomMin },
+        uAnomMax: { value: s.moisture.uAnomMax },
+        uThreshold: { value: s.moisture.uThreshold },
+        uGamma: { value: s.moisture.uGamma },
+        uLayerOpacity: { value: 1.0 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+uniform sampler2D uTexA;
+uniform sampler2D uTexB;
+uniform float uMix;
 uniform float uLonOffset;
 
 uniform float uAnomMin;
@@ -94,7 +84,9 @@ void main() {
   vec2 uv = vUv;
   uv.x = fract(uv.x + uLonOffset);
 
-  float c = texture2D(uTex, uv).b;
+  float cA = texture2D(uTexA, uv).b;
+  float cB = texture2D(uTexB, uv).b;
+  float c = mix(cA, cB, clamp(uMix, 0.0, 1.0));
   float anom = mix(uAnomMin, uAnomMax, c);
 
   if (anom <= uThreshold) discard;
@@ -114,63 +106,39 @@ void main() {
   gl_FragColor = vec4(col, alpha);
 }
 `,
-      });
+    });
 
-    const matA = makeMaterial();
-    const matB = makeMaterial();
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.name = "moisture-transport-layer";
+    mesh.renderOrder = 50;
+    mesh.frustumCulled = false;
+    mesh.visible = s.layers.moisture && hasContentRef.current;
 
-    const meshA = new THREE.Mesh(geom, matA);
-    meshA.name = "moisture-transport-layer-A";
-    meshA.renderOrder = 50;
-    meshA.frustumCulled = false;
-
-    const meshB = new THREE.Mesh(geom, matB);
-    meshB.name = "moisture-transport-layer-B";
-    meshB.renderOrder = 50;
-    meshB.frustumCulled = false;
-
-    matB.uniforms.uLayerOpacity.value = 0.0;
-
-    meshA.visible = s.layers.moisture;
-    meshB.visible = s.layers.moisture;
-
-    scene.add(meshA);
-    scene.add(meshB);
-
-    meshARef.current = meshA;
-    meshBRef.current = meshB;
-    activeRef.current = "A";
+    scene.add(mesh);
+    meshRef.current = mesh;
 
     return () => {
-      meshARef.current = null;
-      meshBRef.current = null;
+      meshRef.current = null;
 
-      meshA.removeFromParent();
-      meshB.removeFromParent();
+      mesh.removeFromParent();
       geom.dispose();
 
-      for (const mesh of [meshA, meshB]) {
-        const mat = mesh.material as THREE.ShaderMaterial;
-        const tex = mat.uniforms.uTex.value as THREE.Texture | null;
-        if (tex) tex.dispose();
-        mat.dispose();
-      }
+      disposeCrossfadeTextures(mat);
+      mat.dispose();
     };
   }, [engineReady, globeRef, sceneRef]);
 
   useEffect(() => {
     if (!engineReady) return;
-    const meshA = meshARef.current;
-    const meshB = meshBRef.current;
-    if (!meshA || !meshB) return;
+    const mesh = meshRef.current;
+    if (!mesh) return;
 
     pendingRef.current = useControls.getState().moisture;
 
     const unsubVis = useControls.subscribe(
       (st) => st.layers.moisture,
       (v) => {
-        meshA.visible = v;
-        meshB.visible = v;
+        mesh.visible = v && hasContentRef.current;
       }
     );
 
@@ -178,6 +146,7 @@ void main() {
       (st) => st.moisture,
       (p) => {
         pendingRef.current = p;
+        applyMoistureParams(mesh.material as THREE.ShaderMaterial, p);
       }
     );
 
@@ -189,32 +158,31 @@ void main() {
 
   useEffect(() => {
     if (!engineReady) return;
-    const meshA = meshARef.current;
-    const meshB = meshBRef.current;
-    if (!meshA || !meshB) return;
+    const mesh = meshRef.current;
+    if (!mesh) return;
+
+    const mat = mesh.material as THREE.ShaderMaterial;
 
     let cancelled = false;
     const myReqId = ++reqIdRef.current;
     const isCancelled = () => cancelled || myReqId !== reqIdRef.current;
 
-    if (!useControls.getState().layers.moisture) {
-      meshA.visible = false;
-      meshB.visible = false;
+    if (!enabled) {
+      hasContentRef.current = false;
+      mesh.visible = false;
+      disposeCrossfadeTextures(mat);
+      mat.uniforms.uTexA.value = null;
+      mat.uniforms.uTexB.value = null;
+      mat.uniforms.uMix.value = 0.0;
+      mat.uniforms.uLayerOpacity.value = 0.0;
+      mat.needsUpdate = true;
       signalReady(timestamp);
       return () => {
         cancelled = true;
       };
     }
 
-    meshA.visible = true;
-    meshB.visible = true;
-
-    const activeKey = activeRef.current;
-    const activeMesh = activeKey === "A" ? meshA : meshB;
-    const nextMesh = activeKey === "A" ? meshB : meshA;
-
-    const activeMat = activeMesh.material as THREE.ShaderMaterial;
-    const nextMat = nextMesh.material as THREE.ShaderMaterial;
+    mesh.visible = hasContentRef.current;
 
     const url = totalColumnWaterApiUrl(timestamp);
 
@@ -229,40 +197,40 @@ void main() {
         configureDataTexture(tex);
 
         const latest = pendingRef.current ?? useControls.getState().moisture;
-        applyMoistureParams(nextMat, latest);
+        applyMoistureParams(mat, latest);
 
-        const prevNextTex = nextMat.uniforms.uTex.value as THREE.Texture | null;
-        nextMat.uniforms.uTex.value = tex;
-        nextMat.needsUpdate = true;
-        if (prevNextTex) prevNextTex.dispose();
+        const hadVisibleContent = hasContentRef.current;
+        hasContentRef.current = true;
+        mesh.visible = true;
 
-        nextMat.uniforms.uLayerOpacity.value = 0.0;
-        activeMat.uniforms.uLayerOpacity.value = 1.0;
+        if (!hadVisibleContent) {
+          disposeCrossfadeTextures(mat);
+          mat.uniforms.uTexA.value = tex;
+          mat.uniforms.uTexB.value = tex;
+          mat.uniforms.uMix.value = 0.0;
+          mat.uniforms.uLayerOpacity.value = 0.0;
+          mat.needsUpdate = true;
 
-        const FADE_MS = 220;
+          animateUniform(mat, "uLayerOpacity", 0.0, 1.0, 220, isCancelled);
+          signalReady(timestamp);
+          return;
+        }
 
-        animateFade(
-          FADE_MS,
+        mat.uniforms.uLayerOpacity.value = 1.0;
+        crossfadeTextureUniforms({
+          material: mat,
+          nextTexture: tex,
           isCancelled,
-          (t) => {
-            activeMat.uniforms.uLayerOpacity.value = 1.0 - t;
-            nextMat.uniforms.uLayerOpacity.value = t;
-          },
-          () => {
-            if (isCancelled()) return;
-
-            activeRef.current = activeKey === "A" ? "B" : "A";
-            activeMat.uniforms.uLayerOpacity.value = 0.0;
-            nextMat.uniforms.uLayerOpacity.value = 1.0;
-          }
-        );
-
+        });
         signalReady(timestamp);
       },
       undefined,
       (err) => {
         if (isCancelled()) return;
         console.error("Failed to load moisture png", err);
+        if (!hasContentRef.current) {
+          mesh.visible = false;
+        }
         signalReady(timestamp);
       }
     );
@@ -270,7 +238,7 @@ void main() {
     return () => {
       cancelled = true;
     };
-  }, [engineReady, timestamp, signalReady]);
+  }, [enabled, engineReady, timestamp, signalReady]);
 
   return null;
 }

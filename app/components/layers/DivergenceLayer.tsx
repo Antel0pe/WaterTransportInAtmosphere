@@ -3,7 +3,12 @@ import * as THREE from "three";
 import { useEarthLayer } from "./EarthBase";
 import { divergenceApiUrl } from "../utils/ApiResponses";
 import { DivergencePressure, useControls } from "../../state/controlsStore";
-import { configureDataTexture } from "./shaderUtils";
+import {
+  animateUniform,
+  configureDataTexture,
+  crossfadeTextureUniforms,
+  disposeCrossfadeTextures,
+} from "./shaderUtils";
 
 const SUPPORTED_LEVELS = [250, 500, 925] as const;
 type SupportedLevel = (typeof SUPPORTED_LEVELS)[number];
@@ -21,11 +26,10 @@ function resolveLevel(pressure: DivergencePressure): SupportedLevel | null {
 
 type DivergenceParams = ReturnType<typeof useControls.getState>["divergence"];
 
-function applyDivergenceParams(mat: THREE.ShaderMaterial, p: DivergenceParams, level: SupportedLevel) {
-  const r = defaultRangeForLevel(level);
-  mat.uniforms.uDataMin.value = r.min;
-  mat.uniforms.uDataMax.value = r.max;
-
+function applyDivergenceDisplayParams(
+  mat: THREE.ShaderMaterial,
+  p: DivergenceParams
+) {
   mat.uniforms.uDisplayMin.value = p.uDivMin;
   mat.uniforms.uDisplayMax.value = p.uDivMax;
   mat.uniforms.uGamma.value = p.uGamma;
@@ -34,21 +38,15 @@ function applyDivergenceParams(mat: THREE.ShaderMaterial, p: DivergenceParams, l
   mat.uniforms.uAsinhK.value = p.uAsinhK;
 }
 
-function animateFade(
-  ms: number,
-  isCancelled: () => boolean,
-  onUpdate: (t: number) => void,
-  onDone?: () => void
+function applyDivergenceLoadedLevelParams(
+  mat: THREE.ShaderMaterial,
+  p: DivergenceParams,
+  level: SupportedLevel
 ) {
-  const start = performance.now();
-  function step(now: number) {
-    if (isCancelled()) return;
-    const t = Math.min(1, (now - start) / Math.max(ms, 1));
-    onUpdate(t);
-    if (t < 1) requestAnimationFrame(step);
-    else onDone?.();
-  }
-  requestAnimationFrame(step);
+  const r = defaultRangeForLevel(level);
+  mat.uniforms.uDataMin.value = r.min;
+  mat.uniforms.uDataMax.value = r.max;
+  applyDivergenceDisplayParams(mat, p);
 }
 
 export default function DivergenceLayer() {
@@ -57,17 +55,10 @@ export default function DivergenceLayer() {
 
   const pressureLevel = useControls((st) => st.divergence.pressureLevel);
 
-  const meshARef = useRef<THREE.Mesh | null>(null);
-  const meshBRef = useRef<THREE.Mesh | null>(null);
-
-  // which mesh is currently "active"/visible
-  const activeRef = useRef<"A" | "B">("A");
-
-  // latest-request-wins
+  const meshRef = useRef<THREE.Mesh | null>(null);
   const reqIdRef = useRef(0);
-
-  // latest UI params snapshot
   const pendingRef = useRef<DivergenceParams | null>(null);
+  const hasContentRef = useRef(false);
 
   useEffect(() => {
     if (!engineReady) return;
@@ -81,37 +72,36 @@ export default function DivergenceLayer() {
     const LIFT = R * 0.0024;
     const geom = new THREE.SphereGeometry(R + LIFT, 128, 128);
 
-    const makeMaterial = () =>
-      new THREE.ShaderMaterial({
-        transparent: true,
-        depthWrite: false,
-        depthTest: true,
-        uniforms: {
-          uTex: { value: null as THREE.Texture | null },
-          uLonOffset: { value: 0.25 },
-
-          uDataMin: { value: 0 },
-          uDataMax: { value: 1 },
-
-          uDisplayMin: { value: s.divergence.uDivMin },
-          uDisplayMax: { value: s.divergence.uDivMax },
-          uGamma: { value: s.divergence.uGamma },
-          uAlpha: { value: s.divergence.uAlpha },
-          uZeroEps: { value: s.divergence.uZeroEps },
-          uAsinhK: { value: s.divergence.uAsinhK },
-
-          // NEW: per-mesh fade control
-          uLayerOpacity: { value: 1.0 },
-        },
-        vertexShader: `
-          varying vec2 vUv;
-          void main() {
-            vUv = uv;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `,
-        fragmentShader: `
-uniform sampler2D uTex;
+    const mat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      uniforms: {
+        uTexA: { value: null as THREE.Texture | null },
+        uTexB: { value: null as THREE.Texture | null },
+        uMix: { value: 0.0 },
+        uLonOffset: { value: 0.25 },
+        uDataMin: { value: 0 },
+        uDataMax: { value: 1 },
+        uDisplayMin: { value: s.divergence.uDivMin },
+        uDisplayMax: { value: s.divergence.uDivMax },
+        uGamma: { value: s.divergence.uGamma },
+        uAlpha: { value: s.divergence.uAlpha },
+        uZeroEps: { value: s.divergence.uZeroEps },
+        uAsinhK: { value: s.divergence.uAsinhK },
+        uLayerOpacity: { value: 1.0 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+uniform sampler2D uTexA;
+uniform sampler2D uTexB;
+uniform float uMix;
 uniform float uLonOffset;
 uniform float uDataMin;
 uniform float uDataMax;
@@ -151,7 +141,9 @@ void main() {
   vec2 uv = vUv;
   uv.x = fract(uv.x + uLonOffset);
 
-  float x = texture2D(uTex, uv).r;
+  float xA = texture2D(uTexA, uv).r;
+  float xB = texture2D(uTexB, uv).r;
+  float x = mix(xA, xB, clamp(uMix, 0.0, 1.0));
   float value = mix(uDataMin, uDataMax, x);
 
   float v = clamp(value, uDisplayMin, uDisplayMax);
@@ -176,61 +168,33 @@ void main() {
 
   gl_FragColor = vec4(col, a);
 }
-        `,
-      });
+      `,
+    });
 
-    const matA = makeMaterial();
-    const matB = makeMaterial();
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.name = "divergence-layer";
+    mesh.renderOrder = 57;
+    mesh.frustumCulled = false;
+    mesh.visible = s.divergence.pressureLevel !== "none" && hasContentRef.current;
 
-    const meshA = new THREE.Mesh(geom, matA);
-    meshA.name = "divergence-layer-A";
-    meshA.renderOrder = 57;
-    meshA.frustumCulled = false;
-
-    const meshB = new THREE.Mesh(geom, matB);
-    meshB.name = "divergence-layer-B";
-    meshB.renderOrder = 57;
-    meshB.frustumCulled = false;
-
-    // start with B invisible
-    (matB.uniforms.uLayerOpacity.value as number) = 0.0;
-
-    const visible = s.divergence.pressureLevel !== "none";
-    meshA.visible = visible;
-    meshB.visible = visible;
-
-    scene.add(meshA);
-    scene.add(meshB);
-
-    meshARef.current = meshA;
-    meshBRef.current = meshB;
-    activeRef.current = "A";
+    scene.add(mesh);
+    meshRef.current = mesh;
 
     return () => {
-      meshARef.current = null;
-      meshBRef.current = null;
+      meshRef.current = null;
 
-      meshA.removeFromParent();
-      meshB.removeFromParent();
-
-      // shared geometry
+      mesh.removeFromParent();
       geom.dispose();
 
-      for (const mesh of [meshA, meshB]) {
-        const mat = mesh.material as THREE.ShaderMaterial;
-        const tex = mat.uniforms.uTex.value as THREE.Texture | null;
-        if (tex) tex.dispose();
-        mat.dispose();
-      }
+      disposeCrossfadeTextures(mat);
+      mat.dispose();
     };
   }, [engineReady, globeRef, sceneRef]);
 
-  // Subscribe: keep params fresh (no uniform apply here)
   useEffect(() => {
     if (!engineReady) return;
-    const meshA = meshARef.current;
-    const meshB = meshBRef.current;
-    if (!meshA || !meshB) return;
+    const mesh = meshRef.current;
+    if (!mesh) return;
 
     pendingRef.current = useControls.getState().divergence;
 
@@ -238,21 +202,22 @@ void main() {
       (st) => st.divergence,
       (p) => {
         pendingRef.current = p;
-        const vis = p.pressureLevel !== "none";
-        meshA.visible = vis;
-        meshB.visible = vis;
+        mesh.visible = p.pressureLevel !== "none" && hasContentRef.current;
+        if (hasContentRef.current) {
+          applyDivergenceDisplayParams(mesh.material as THREE.ShaderMaterial, p);
+        }
       }
     );
 
     return () => unsub();
   }, [engineReady]);
 
-  // Load + crossfade between meshes (no flashing)
   useEffect(() => {
     if (!engineReady) return;
-    const meshA = meshARef.current;
-    const meshB = meshBRef.current;
-    if (!meshA || !meshB) return;
+    const mesh = meshRef.current;
+    if (!mesh) return;
+
+    const mat = mesh.material as THREE.ShaderMaterial;
 
     let cancelled = false;
     const myReqId = ++reqIdRef.current;
@@ -261,23 +226,21 @@ void main() {
     const level = resolveLevel(pressureLevel);
 
     if (level === null) {
-      meshA.visible = false;
-      meshB.visible = false;
+      hasContentRef.current = false;
+      mesh.visible = false;
+      disposeCrossfadeTextures(mat);
+      mat.uniforms.uTexA.value = null;
+      mat.uniforms.uTexB.value = null;
+      mat.uniforms.uMix.value = 0.0;
+      mat.uniforms.uLayerOpacity.value = 0.0;
+      mat.needsUpdate = true;
       signalReady(timestamp);
       return () => {
         cancelled = true;
       };
     }
 
-    meshA.visible = true;
-    meshB.visible = true;
-
-    const activeKey = activeRef.current;
-    const activeMesh = activeKey === "A" ? meshA : meshB;
-    const nextMesh = activeKey === "A" ? meshB : meshA;
-
-    const activeMat = activeMesh.material as THREE.ShaderMaterial;
-    const nextMat = nextMesh.material as THREE.ShaderMaterial;
+    mesh.visible = hasContentRef.current;
 
     const url = divergenceApiUrl(timestamp, level);
 
@@ -291,49 +254,41 @@ void main() {
 
         configureDataTexture(tex);
 
-        // apply params to NEXT material only (safe; it's currently faded out)
         const latest = pendingRef.current ?? useControls.getState().divergence;
-        applyDivergenceParams(nextMat, latest, level);
+        applyDivergenceLoadedLevelParams(mat, latest, level);
 
-        // swap texture on next material
-        const prevNextTex = nextMat.uniforms.uTex.value as THREE.Texture | null;
-        nextMat.uniforms.uTex.value = tex;
-        nextMat.needsUpdate = true;
-        if (prevNextTex) prevNextTex.dispose();
+        const hadVisibleContent = hasContentRef.current;
+        hasContentRef.current = true;
+        mesh.visible = true;
 
-        // Ensure start state
-        nextMat.uniforms.uLayerOpacity.value = 0.0;
-        activeMat.uniforms.uLayerOpacity.value = 1.0;
+        if (!hadVisibleContent) {
+          disposeCrossfadeTextures(mat);
+          mat.uniforms.uTexA.value = tex;
+          mat.uniforms.uTexB.value = tex;
+          mat.uniforms.uMix.value = 0.0;
+          mat.uniforms.uLayerOpacity.value = 0.0;
+          mat.needsUpdate = true;
 
-        const FADE_MS = 220;
+          animateUniform(mat, "uLayerOpacity", 0.0, 1.0, 220, isCancelled);
+          signalReady(timestamp);
+          return;
+        }
 
-        animateFade(
-          FADE_MS,
+        mat.uniforms.uLayerOpacity.value = 1.0;
+        crossfadeTextureUniforms({
+          material: mat,
+          nextTexture: tex,
           isCancelled,
-          (t) => {
-            // crossfade opacities
-            activeMat.uniforms.uLayerOpacity.value = 1.0 - t;
-            nextMat.uniforms.uLayerOpacity.value = t;
-          },
-          () => {
-            if (isCancelled()) return;
-
-            // commit: make next the active mesh
-            activeRef.current = activeKey === "A" ? "B" : "A";
-
-            // keep old mesh at 0 opacity (still around for next transition)
-            activeMat.uniforms.uLayerOpacity.value = 0.0;
-            nextMat.uniforms.uLayerOpacity.value = 1.0;
-          }
-        );
-
+        });
         signalReady(timestamp);
       },
       undefined,
       (err) => {
         if (isCancelled()) return;
         console.error("Failed to load divergence png", err);
-        // keep current visible; don't change anything
+        if (!hasContentRef.current) {
+          mesh.visible = false;
+        }
         signalReady(timestamp);
       }
     );

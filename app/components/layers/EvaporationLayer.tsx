@@ -4,7 +4,12 @@ import * as THREE from "three";
 import { useEarthLayer } from "./EarthBase";
 import { evaporationApiUrl } from "../utils/ApiResponses";
 import { useControls } from "../../state/controlsStore";
-import { configureDataTexture } from "./shaderUtils";
+import {
+  animateUniform,
+  configureDataTexture,
+  crossfadeTextureUniforms,
+  disposeCrossfadeTextures,
+} from "./shaderUtils";
 
 type EvapParams = ReturnType<typeof useControls.getState>["evap"];
 
@@ -16,33 +21,15 @@ function applyEvapParams(mat: THREE.ShaderMaterial, p: EvapParams) {
   mat.uniforms.uAlphaScale.value = p.uAlphaScale;
 }
 
-function animateFade(
-  ms: number,
-  isCancelled: () => boolean,
-  onUpdate: (t: number) => void,
-  onDone?: () => void
-) {
-  const start = performance.now();
-  function step(now: number) {
-    if (isCancelled()) return;
-    const t = Math.min(1, (now - start) / Math.max(ms, 1));
-    onUpdate(t);
-    if (t < 1) requestAnimationFrame(step);
-    else onDone?.();
-  }
-  requestAnimationFrame(step);
-}
-
 export default function EvaporationLayer() {
   const { engineReady, sceneRef, globeRef, timestamp, signalReady } =
     useEarthLayer("evaporation");
+  const enabled = useControls((st) => st.layers.evaporation);
 
-  const meshARef = useRef<THREE.Mesh | null>(null);
-  const meshBRef = useRef<THREE.Mesh | null>(null);
-
-  const activeRef = useRef<"A" | "B">("A");
+  const meshRef = useRef<THREE.Mesh | null>(null);
   const reqIdRef = useRef(0);
   const pendingRef = useRef<EvapParams | null>(null);
+  const hasContentRef = useRef(false);
 
   useEffect(() => {
     if (!engineReady) return;
@@ -57,119 +44,100 @@ export default function EvaporationLayer() {
     const s = useControls.getState();
     pendingRef.current = s.evap;
 
-    const makeMaterial = () =>
-      new THREE.ShaderMaterial({
-        transparent: true,
-        depthWrite: false,
-        depthTest: true,
-        uniforms: {
-          uTex: { value: null as THREE.Texture | null },
-          uLonOffset: { value: 0.25 },
-          uAnomMin: { value: s.evap.uEvapMin },
-          uAnomMax: { value: s.evap.uEvapMax },
-          uThreshold: { value: s.evap.uThreshold },
-          uGamma: { value: s.evap.uGamma },
-          uAlphaScale: { value: s.evap.uAlphaScale },
-          uLayerOpacity: { value: 1.0 },
-        },
-        vertexShader: `
-          varying vec2 vUv;
-          void main() {
-            vUv = uv;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `,
-        fragmentShader: `
-          uniform sampler2D uTex;
-          uniform float uLonOffset;
+    const mat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      uniforms: {
+        uTexA: { value: null as THREE.Texture | null },
+        uTexB: { value: null as THREE.Texture | null },
+        uMix: { value: 0.0 },
+        uLonOffset: { value: 0.25 },
+        uAnomMin: { value: s.evap.uEvapMin },
+        uAnomMax: { value: s.evap.uEvapMax },
+        uThreshold: { value: s.evap.uThreshold },
+        uGamma: { value: s.evap.uGamma },
+        uAlphaScale: { value: s.evap.uAlphaScale },
+        uLayerOpacity: { value: 1.0 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+uniform sampler2D uTexA;
+uniform sampler2D uTexB;
+uniform float uMix;
+uniform float uLonOffset;
 
-          uniform float uAnomMin;
-          uniform float uAnomMax;
+uniform float uAnomMin;
+uniform float uAnomMax;
 
-          uniform float uThreshold;
-          uniform float uGamma;
-          uniform float uAlphaScale;
-          uniform float uLayerOpacity;
+uniform float uThreshold;
+uniform float uGamma;
+uniform float uAlphaScale;
+uniform float uLayerOpacity;
 
-          varying vec2 vUv;
+varying vec2 vUv;
 
-          void main() {
-            vec2 uv = vUv;
-            uv.x = fract(uv.x + uLonOffset);
+void main() {
+  vec2 uv = vUv;
+  uv.x = fract(uv.x + uLonOffset);
 
-            float b01 = texture2D(uTex, uv).b;
-            float anom = mix(uAnomMin, uAnomMax, b01);
+  float b01A = texture2D(uTexA, uv).b;
+  float b01B = texture2D(uTexB, uv).b;
+  float b01 = mix(b01A, b01B, clamp(uMix, 0.0, 1.0));
+  float anom = mix(uAnomMin, uAnomMax, b01);
 
-            if (anom <= uThreshold) discard;
+  if (anom <= uThreshold) discard;
 
-            float t = (anom - uThreshold) / max(uAnomMax - uThreshold, 1e-12);
-            t = clamp(t, 0.0, 1.0);
-            t = pow(t, uGamma);
+  float t = (anom - uThreshold) / max(uAnomMax - uThreshold, 1e-12);
+  t = clamp(t, 0.0, 1.0);
+  t = pow(t, uGamma);
 
-            vec3 col = vec3(t, 0.0, 0.0);
-            float alpha = clamp(t * uAlphaScale, 0.0, 1.0);
-            alpha *= clamp(uLayerOpacity, 0.0, 1.0);
+  vec3 col = vec3(t, 0.0, 0.0);
+  float alpha = clamp(t * uAlphaScale, 0.0, 1.0);
+  alpha *= clamp(uLayerOpacity, 0.0, 1.0);
 
-            gl_FragColor = vec4(col, alpha);
-          }
-        `,
-      });
+  gl_FragColor = vec4(col, alpha);
+}
+      `,
+    });
 
-    const matA = makeMaterial();
-    const matB = makeMaterial();
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.name = "evaporation-anomaly-layer";
+    mesh.renderOrder = 50;
+    mesh.frustumCulled = false;
+    mesh.visible = s.layers.evaporation && hasContentRef.current;
 
-    const meshA = new THREE.Mesh(geom, matA);
-    meshA.name = "evaporation-anomaly-layer-A";
-    meshA.renderOrder = 50;
-    meshA.frustumCulled = false;
-
-    const meshB = new THREE.Mesh(geom, matB);
-    meshB.name = "evaporation-anomaly-layer-B";
-    meshB.renderOrder = 50;
-    meshB.frustumCulled = false;
-
-    matB.uniforms.uLayerOpacity.value = 0.0;
-
-    meshA.visible = s.layers.evaporation;
-    meshB.visible = s.layers.evaporation;
-
-    scene.add(meshA);
-    scene.add(meshB);
-
-    meshARef.current = meshA;
-    meshBRef.current = meshB;
-    activeRef.current = "A";
+    scene.add(mesh);
+    meshRef.current = mesh;
 
     return () => {
-      meshARef.current = null;
-      meshBRef.current = null;
+      meshRef.current = null;
 
-      meshA.removeFromParent();
-      meshB.removeFromParent();
+      mesh.removeFromParent();
       geom.dispose();
 
-      for (const mesh of [meshA, meshB]) {
-        const mat = mesh.material as THREE.ShaderMaterial;
-        const tex = mat.uniforms.uTex.value as THREE.Texture | null;
-        if (tex) tex.dispose();
-        mat.dispose();
-      }
+      disposeCrossfadeTextures(mat);
+      mat.dispose();
     };
   }, [engineReady, globeRef, sceneRef]);
 
   useEffect(() => {
     if (!engineReady) return;
-    const meshA = meshARef.current;
-    const meshB = meshBRef.current;
-    if (!meshA || !meshB) return;
+    const mesh = meshRef.current;
+    if (!mesh) return;
 
     pendingRef.current = useControls.getState().evap;
 
     const unsubVis = useControls.subscribe(
       (st) => st.layers.evaporation,
       (v) => {
-        meshA.visible = v;
-        meshB.visible = v;
+        mesh.visible = v && hasContentRef.current;
       }
     );
 
@@ -177,6 +145,7 @@ export default function EvaporationLayer() {
       (st) => st.evap,
       (p) => {
         pendingRef.current = p;
+        applyEvapParams(mesh.material as THREE.ShaderMaterial, p);
       }
     );
 
@@ -188,32 +157,31 @@ export default function EvaporationLayer() {
 
   useEffect(() => {
     if (!engineReady) return;
-    const meshA = meshARef.current;
-    const meshB = meshBRef.current;
-    if (!meshA || !meshB) return;
+    const mesh = meshRef.current;
+    if (!mesh) return;
+
+    const mat = mesh.material as THREE.ShaderMaterial;
 
     let cancelled = false;
     const myReqId = ++reqIdRef.current;
     const isCancelled = () => cancelled || myReqId !== reqIdRef.current;
 
-    if (!useControls.getState().layers.evaporation) {
-      meshA.visible = false;
-      meshB.visible = false;
+    if (!enabled) {
+      hasContentRef.current = false;
+      mesh.visible = false;
+      disposeCrossfadeTextures(mat);
+      mat.uniforms.uTexA.value = null;
+      mat.uniforms.uTexB.value = null;
+      mat.uniforms.uMix.value = 0.0;
+      mat.uniforms.uLayerOpacity.value = 0.0;
+      mat.needsUpdate = true;
       signalReady(timestamp);
       return () => {
         cancelled = true;
       };
     }
 
-    meshA.visible = true;
-    meshB.visible = true;
-
-    const activeKey = activeRef.current;
-    const activeMesh = activeKey === "A" ? meshA : meshB;
-    const nextMesh = activeKey === "A" ? meshB : meshA;
-
-    const activeMat = activeMesh.material as THREE.ShaderMaterial;
-    const nextMat = nextMesh.material as THREE.ShaderMaterial;
+    mesh.visible = hasContentRef.current;
 
     const url = evaporationApiUrl(timestamp);
 
@@ -228,40 +196,40 @@ export default function EvaporationLayer() {
         configureDataTexture(tex);
 
         const latest = pendingRef.current ?? useControls.getState().evap;
-        applyEvapParams(nextMat, latest);
+        applyEvapParams(mat, latest);
 
-        const prevNextTex = nextMat.uniforms.uTex.value as THREE.Texture | null;
-        nextMat.uniforms.uTex.value = tex;
-        nextMat.needsUpdate = true;
-        if (prevNextTex) prevNextTex.dispose();
+        const hadVisibleContent = hasContentRef.current;
+        hasContentRef.current = true;
+        mesh.visible = true;
 
-        nextMat.uniforms.uLayerOpacity.value = 0.0;
-        activeMat.uniforms.uLayerOpacity.value = 1.0;
+        if (!hadVisibleContent) {
+          disposeCrossfadeTextures(mat);
+          mat.uniforms.uTexA.value = tex;
+          mat.uniforms.uTexB.value = tex;
+          mat.uniforms.uMix.value = 0.0;
+          mat.uniforms.uLayerOpacity.value = 0.0;
+          mat.needsUpdate = true;
 
-        const FADE_MS = 220;
+          animateUniform(mat, "uLayerOpacity", 0.0, 1.0, 220, isCancelled);
+          signalReady(timestamp);
+          return;
+        }
 
-        animateFade(
-          FADE_MS,
+        mat.uniforms.uLayerOpacity.value = 1.0;
+        crossfadeTextureUniforms({
+          material: mat,
+          nextTexture: tex,
           isCancelled,
-          (t) => {
-            activeMat.uniforms.uLayerOpacity.value = 1.0 - t;
-            nextMat.uniforms.uLayerOpacity.value = t;
-          },
-          () => {
-            if (isCancelled()) return;
-
-            activeRef.current = activeKey === "A" ? "B" : "A";
-            activeMat.uniforms.uLayerOpacity.value = 0.0;
-            nextMat.uniforms.uLayerOpacity.value = 1.0;
-          }
-        );
-
+        });
         signalReady(timestamp);
       },
       undefined,
       (err) => {
         if (isCancelled()) return;
         console.error("Failed to load evaporation png", err);
+        if (!hasContentRef.current) {
+          mesh.visible = false;
+        }
         signalReady(timestamp);
       }
     );
@@ -269,7 +237,7 @@ export default function EvaporationLayer() {
     return () => {
       cancelled = true;
     };
-  }, [engineReady, timestamp, signalReady]);
+  }, [enabled, engineReady, timestamp, signalReady]);
 
   return null;
 }
