@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import OrderedDict
 from pathlib import Path
-from typing import Any
+from time import perf_counter
+from typing import Any, Callable
 
 import matplotlib
 
@@ -16,11 +18,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-try:
-    from tqdm.auto import tqdm
-except ImportError:
-    def tqdm(iterable=None, **_: Any):  # type: ignore[no-redef]
-        return iterable
+from tqdm.auto import tqdm
+
 
 G0 = 9.80665
 GRAD_STEP_KM = 35.0
@@ -31,6 +30,7 @@ GRAD_MONOTONIC_TOL_M = 1e-3
 GRAD_TRACE_SOUTH_LAT_MIN = 23.0
 GHOST_FORWARD_HOURS = 12
 GHOST_SUBSTEPS_PER_HOUR = 4
+GHOST_UV_HOUR_CHUNK_SIZE = 24
 EARTH_RADIUS_M = 6_371_000.0
 
 
@@ -49,6 +49,51 @@ def _lat_slice_for_dataset(ds: xr.Dataset, lat_min: float, lat_max: float) -> sl
     return slice(lat_max, lat_min) if lat0 > lat1 else slice(lat_min, lat_max)
 
 
+def _tight_lon_slice_bounds(
+    lons_360: np.ndarray,
+    *,
+    pad: float,
+    ds_lon_min: float,
+    ds_lon_max: float,
+) -> tuple[float, float]:
+    lons = np.asarray(lons_360, dtype=float)
+    if lons.size == 0 or not np.any(np.isfinite(lons)):
+        return float(ds_lon_min), float(ds_lon_max)
+
+    center = float(np.nanmedian(lons))
+    lons_local = center + ((lons - center + 180.0) % 360.0 - 180.0)
+    lon_min = float(np.nanmin(lons_local) - pad)
+    lon_max = float(np.nanmax(lons_local) + pad)
+
+    # If the tight window crosses the dataset seam, fall back to the full span.
+    if lon_min < ds_lon_min or lon_max > ds_lon_max:
+        return float(ds_lon_min), float(ds_lon_max)
+
+    return lon_min, lon_max
+
+
+def _hemisphere_subset_bounds(
+    *,
+    start_lat: float,
+    start_lon_360: float,
+    ds_lat_min: float = -89.75,
+    ds_lat_max: float = 89.75,
+    ds_lon_min: float = 0.0,
+    ds_lon_max: float = 359.75,
+) -> tuple[float, float, float, float]:
+    if float(start_lat) >= 0.0:
+        lat_min = max(0.0, float(ds_lat_min))
+        lat_max = float(ds_lat_max)
+    else:
+        lat_min = float(ds_lat_min)
+        lat_max = min(0.0, float(ds_lat_max))
+
+    lon_half_start = 180.0 * np.floor(float(start_lon_360) / 180.0)
+    lon_min = max(float(ds_lon_min), lon_half_start)
+    lon_max = min(float(ds_lon_max), lon_half_start + 179.75)
+    return lat_min, lat_max, lon_min, lon_max
+
+
 def backward_integrate_trajectory_uv(
     ds: xr.Dataset,
     start_lat: float,
@@ -58,8 +103,12 @@ def backward_integrate_trajectory_uv(
     hours_back: int = 72,
     substeps: int = 4,
     earth_radius_m: float = EARTH_RADIUS_M,
+    lon_pad_west_deg: float = 90.0,
+    lon_pad_east_deg: float = 15.0,
+    lat_pad_south_deg: float = 25.0,
+    lat_pad_north_deg: float = 15.0,
 ) -> pd.DataFrame:
-    """Backward trajectory using ERA5 u/v winds."""
+    """Backward trajectory using ERA5 u/v winds over a broad regional subset."""
     if substeps < 1:
         raise ValueError("substeps must be >= 1")
 
@@ -67,12 +116,28 @@ def backward_integrate_trajectory_uv(
     t0 = pd.Timestamp(start_time).to_datetime64()
     t_nearest = ds_uv["valid_time"].sel(valid_time=t0, method="nearest").values
 
+    start_lon_360 = float(start_lon) % 360.0
+    lat_min, lat_max, lon_min, lon_max = _hemisphere_subset_bounds(
+        start_lat=float(start_lat),
+        start_lon_360=start_lon_360,
+        ds_lat_min=float(np.nanmin(np.asarray(ds_uv["latitude"].values, dtype=float))),
+        ds_lat_max=float(np.nanmax(np.asarray(ds_uv["latitude"].values, dtype=float))),
+        ds_lon_min=float(np.nanmin(np.asarray(ds_uv["longitude"].values, dtype=float))),
+        ds_lon_max=float(np.nanmax(np.asarray(ds_uv["longitude"].values, dtype=float))),
+    )
     window_start = np.datetime64(t_nearest) - np.timedelta64(hours_back + 2, "h")
-    ds_uv = ds_uv.sel(valid_time=slice(window_start, np.datetime64(t_nearest))).load()
+    ds_uv = (
+        ds_uv.sel(
+            valid_time=slice(window_start, np.datetime64(t_nearest)),
+            latitude=_lat_slice_for_dataset(ds_uv, lat_min, lat_max),
+            longitude=slice(lon_min, lon_max),
+        )
+        .load()
+    )
 
     times = pd.to_datetime(ds_uv["valid_time"].values)
     lat = float(start_lat)
-    lon = float(start_lon) % 360.0
+    lon = start_lon_360
 
     records = [
         {
@@ -93,6 +158,10 @@ def backward_integrate_trajectory_uv(
         if t_curr - np.timedelta64(1, "h") < t_min:
             break
 
+        hour_start_s = perf_counter()
+        interp_s = 0.0
+        values_s = 0.0
+        update_s = 0.0
         lat_step = lat
         lon_step = lon
 
@@ -100,26 +169,46 @@ def backward_integrate_trajectory_uv(
             sec_back = (s + 0.5) * dt_sub_s
             t_mid = t_curr - np.timedelta64(int(sec_back), "s")
 
+            interp_start_s = perf_counter()
             uv = ds_uv.interp(
                 valid_time=xr.DataArray([t_mid], dims="point"),
                 latitude=xr.DataArray([lat_step], dims="point"),
                 longitude=xr.DataArray([lon_step], dims="point"),
                 kwargs={"bounds_error": False, "fill_value": None},
             )
+            interp_s += perf_counter() - interp_start_s
 
+            values_start_s = perf_counter()
             u_ms = float(np.asarray(uv["u"].values).reshape(-1)[0])
             v_ms = float(np.asarray(uv["v"].values).reshape(-1)[0])
+            values_s += perf_counter() - values_start_s
 
+            if not (np.isfinite(u_ms) and np.isfinite(v_ms)):
+                break
+
+            update_start_s = perf_counter()
             dlat_deg = np.degrees((v_ms * dt_sub_s) / earth_radius_m)
             coslat = max(np.cos(np.radians(lat_step)), 1e-6)
             dlon_deg = np.degrees((u_ms * dt_sub_s) / (earth_radius_m * coslat))
 
             lat_step = float(np.clip(lat_step - dlat_deg, -89.75, 89.75))
             lon_step = float((lon_step - dlon_deg) % 360.0)
+            update_s += perf_counter() - update_start_s
 
         t_curr = t_curr - np.timedelta64(1, "h")
         lat = lat_step
         lon = lon_step
+
+        hour_total_s = perf_counter() - hour_start_s
+        other_s = max(hour_total_s - interp_s - values_s - update_s, 0.0)
+        print(
+            f"[timing][Backward integration][hour={h}/{hours_back}] "
+            f"total={hour_total_s:.3f}s "
+            f"interp={interp_s:.3f}s "
+            f"values={values_s:.3f}s "
+            f"update={update_s:.3f}s "
+            f"other={other_s:.3f}s"
+        )
 
         records.append(
             {
@@ -419,6 +508,9 @@ def _forward_advect_contour_parallel_speed(
         lat_step = lat
 
         for _ in range(int(substeps)):
+            if not (np.isfinite(lat_step) and np.isfinite(lon_step)):
+                break
+
             uv = uv_at_hour.interp(
                 latitude=lat_step,
                 longitude=lon_step,
@@ -426,6 +518,8 @@ def _forward_advect_contour_parallel_speed(
             )
             u_ms = float(uv["u"].values)
             v_ms = float(uv["v"].values)
+            if not (np.isfinite(u_ms) and np.isfinite(v_ms)):
+                break
             speed_ms = float(np.hypot(u_ms, v_ms))
             if speed_ms < 1e-12:
                 continue
@@ -462,16 +556,15 @@ def _forward_advect_contour_parallel_speed(
 
 
 def _forward_advect_contour_parallel_speed_timevarying(
-    uv_all: xr.Dataset,
-    gph_all: xr.DataArray,
-    contour_levels: np.ndarray,
+    get_uv_hour: Callable[[Any], xr.Dataset],
+    get_contour_hour: Callable[[Any], dict[float, list[np.ndarray]]],
     start_time: Any,
     lon0: float,
     lat0: float,
     hours: int = GHOST_FORWARD_HOURS,
     substeps: int = GHOST_SUBSTEPS_PER_HOUR,
     earth_radius_m: float = EARTH_RADIUS_M,
-    contour_cache: dict[pd.Timestamp, dict[float, list[np.ndarray]]] | None = None,
+    timing: dict[str, float] | None = None,
 ) -> np.ndarray:
     if substeps < 1:
         raise ValueError("substeps must be >= 1")
@@ -482,39 +575,47 @@ def _forward_advect_contour_parallel_speed_timevarying(
     start_ts = _nearest_hour_timestamp(start_time)
     ghost_points: list[tuple[float, float]] = []
 
-    if contour_cache is None:
-        contour_cache = {}
-
     for hour_idx in range(int(hours)):
         hour_ts = start_ts + pd.Timedelta(hours=hour_idx)
-        hour_key = _nearest_hour_timestamp(hour_ts)
-        uv_hour = _select_valid_time_slice(uv_all, hour_ts)
-
-        if hour_key not in contour_cache:
-            gph_hour = _select_valid_time_slice(gph_all, hour_ts)
-            contour_cache[hour_key] = extract_contour_segments(gph_hour, contour_levels)
-        contour_dict_hour = contour_cache[hour_key]
+        hour_load_start_s = perf_counter()
+        uv_hour = get_uv_hour(hour_ts)
+        contour_dict_hour = get_contour_hour(hour_ts)
+        if timing is not None:
+            timing["load"] = timing.get("load", 0.0) + (perf_counter() - hour_load_start_s)
 
         lon_step = lon
         lat_step = lat
 
         for _ in range(int(substeps)):
+            if not (np.isfinite(lat_step) and np.isfinite(lon_step)):
+                break
+
+            interp_start_s = perf_counter()
             uv = uv_hour.interp(
                 latitude=lat_step,
                 longitude=lon_step,
                 kwargs={"bounds_error": False, "fill_value": None},
             )
+            if timing is not None:
+                timing["interp"] = timing.get("interp", 0.0) + (perf_counter() - interp_start_s)
             u_ms = float(uv["u"].values)
             v_ms = float(uv["v"].values)
+            if not (np.isfinite(u_ms) and np.isfinite(v_ms)):
+                break
             speed_ms = float(np.hypot(u_ms, v_ms))
             if speed_ms < 1e-12:
                 continue
 
+            tangent_start_s = perf_counter()
             tangent = _nearest_segment_tangent_unit_from_dict(
                 contour_dict_hour,
                 lon_step,
                 lat_step,
             )
+            if timing is not None:
+                timing["tangent"] = timing.get("tangent", 0.0) + (
+                    perf_counter() - tangent_start_s
+                )
             if tangent is None:
                 dir_east = float(u_ms / speed_ms)
                 dir_north = float(v_ms / speed_ms)
@@ -525,6 +626,7 @@ def _forward_advect_contour_parallel_speed_timevarying(
                     dir_east = -dir_east
                     dir_north = -dir_north
 
+            update_start_s = perf_counter()
             d_east_m = speed_ms * dir_east * dt_sub_s
             d_north_m = speed_ms * dir_north * dt_sub_s
             dlat_deg = np.degrees(d_north_m / earth_radius_m)
@@ -533,6 +635,8 @@ def _forward_advect_contour_parallel_speed_timevarying(
 
             lat_step = float(np.clip(lat_step + dlat_deg, -89.75, 89.75))
             lon_step = float((lon_step + dlon_deg) % 360.0)
+            if timing is not None:
+                timing["update"] = timing.get("update", 0.0) + (perf_counter() - update_start_s)
 
         lon = lon_step
         lat = lat_step
@@ -975,16 +1079,14 @@ def build_export_payload(
     )
     dataset_lats = np.asarray(era5_ds["latitude"].values, dtype=float)
     dataset_lons = np.asarray(era5_ds["longitude"].values, dtype=float)
-    contour_lat_min = max(
-        float(np.nanmin(dataset_lats)),
-        min(
-            GRAD_TRACE_SOUTH_LAT_MIN,
-            float(trajectory_samples["latitude"].min()) - contour_lat_pad,
-        ),
+    contour_lat_min, contour_lat_max, contour_lon_min, contour_lon_max = _hemisphere_subset_bounds(
+        start_lat=float(start_lat),
+        start_lon_360=float(start_lon) % 360.0,
+        ds_lat_min=float(np.nanmin(dataset_lats)),
+        ds_lat_max=float(np.nanmax(dataset_lats)),
+        ds_lon_min=float(np.nanmin(dataset_lons)),
+        ds_lon_max=float(np.nanmax(dataset_lons)),
     )
-    contour_lat_max = float(np.nanmax(dataset_lats))
-    contour_lon_min = float(np.nanmin(dataset_lons))
-    contour_lon_max = float(np.nanmax(dataset_lons))
 
     gph_hourly_925_m = (
         era5_ds["z"]
@@ -995,7 +1097,7 @@ def build_export_payload(
             longitude=slice(contour_lon_min, contour_lon_max),
         )
         / G0
-    ).load()
+    )
     uv_hourly_925 = (
         era5_ds[["u", "v"]]
         .sel(
@@ -1004,52 +1106,132 @@ def build_export_payload(
             latitude=_lat_slice_for_dataset(era5_ds, contour_lat_min, contour_lat_max),
             longitude=slice(contour_lon_min, contour_lon_max),
         )
-    ).load()
+    )
 
-    gph_hourly_contours: dict[pd.Timestamp, dict[float, list[np.ndarray]]] = {}
-    for frame_time in tqdm(
-        gph_hourly_925_m["valid_time"].values,
-        desc="Extracting hourly contour fields",
-        unit="hour",
-    ):
-        gph_frame = gph_hourly_925_m.sel(valid_time=frame_time)
-        gph_hourly_contours[pd.Timestamp(frame_time)] = extract_contour_segments(
-            gph_frame, contour_levels
+    max_hour_cache_items = int(GHOST_FORWARD_HOURS) + 4
+    max_uv_hour_cache_items = max(int(GHOST_UV_HOUR_CHUNK_SIZE) * 2, max_hour_cache_items)
+    gph_hour_cache: OrderedDict[pd.Timestamp, xr.DataArray] = OrderedDict()
+    uv_hour_cache: OrderedDict[pd.Timestamp, xr.Dataset] = OrderedDict()
+    contour_hour_cache: OrderedDict[pd.Timestamp, dict[float, list[np.ndarray]]] = OrderedDict()
+
+    def _trim_cache(cache: OrderedDict[Any, Any]) -> None:
+        while len(cache) > max_hour_cache_items:
+            cache.popitem(last=False)
+
+    def _trim_uv_cache() -> None:
+        while len(uv_hour_cache) > max_uv_hour_cache_items:
+            uv_hour_cache.popitem(last=False)
+
+    def _get_gph_hour(ts: Any) -> xr.DataArray:
+        hour_key = _nearest_hour_timestamp(ts)
+        cached = gph_hour_cache.get(hour_key)
+        if cached is not None:
+            gph_hour_cache.move_to_end(hour_key)
+            return cached
+
+        gph_hour = _select_valid_time_slice(gph_hourly_925_m, hour_key).load()
+        gph_hour_cache[hour_key] = gph_hour
+        _trim_cache(gph_hour_cache)
+        return gph_hour
+
+    def _get_uv_hour(ts: Any) -> xr.Dataset:
+        hour_key = _nearest_hour_timestamp(ts)
+        cached = uv_hour_cache.get(hour_key)
+        if cached is not None:
+            uv_hour_cache.move_to_end(hour_key)
+            return cached
+
+        chunk_end = min(
+            hour_key + pd.Timedelta(hours=int(GHOST_UV_HOUR_CHUNK_SIZE) - 1),
+            _nearest_hour_timestamp(contour_time_max),
         )
+        uv_chunk = uv_hourly_925.sel(
+            valid_time=slice(np.datetime64(hour_key), np.datetime64(chunk_end))
+        ).load()
+
+        chunk_times = pd.to_datetime(uv_chunk["valid_time"].values)
+        for chunk_ts in chunk_times:
+            chunk_hour_key = _nearest_hour_timestamp(chunk_ts)
+            uv_hour_cache[chunk_hour_key] = _select_valid_time_slice(uv_chunk, chunk_hour_key)
+            uv_hour_cache.move_to_end(chunk_hour_key)
+
+        _trim_uv_cache()
+        return uv_hour_cache[hour_key]
+
+    def _get_contour_hour(ts: Any) -> dict[float, list[np.ndarray]]:
+        hour_key = _nearest_hour_timestamp(ts)
+        cached = contour_hour_cache.get(hour_key)
+        if cached is not None:
+            contour_hour_cache.move_to_end(hour_key)
+            return cached
+
+        contour_dict = extract_contour_segments(_get_gph_hour(hour_key), contour_levels)
+        contour_hour_cache[hour_key] = contour_dict
+        _trim_cache(contour_hour_cache)
+        return contour_dict
+
+    def _get_uv_hour_timed(ts: Any, timing: dict[str, float] | None = None) -> xr.Dataset:
+        start_s = perf_counter()
+        uv_hour = _get_uv_hour(ts)
+        if timing is not None:
+            timing["uv_hour_load"] = timing.get("uv_hour_load", 0.0) + (
+                perf_counter() - start_s
+            )
+        return uv_hour
+
+    def _get_contour_hour_timed(
+        ts: Any, timing: dict[str, float] | None = None
+    ) -> dict[float, list[np.ndarray]]:
+        hour_key = _nearest_hour_timestamp(ts)
+        cached = contour_hour_cache.get(hour_key)
+        if cached is not None:
+            contour_hour_cache.move_to_end(hour_key)
+            return cached
+
+        start_s = perf_counter()
+        contour_dict = extract_contour_segments(_get_gph_hour(hour_key), contour_levels)
+        contour_hour_cache[hour_key] = contour_dict
+        _trim_cache(contour_hour_cache)
+        if timing is not None:
+            timing["contour_hour_build"] = timing.get("contour_hour_build", 0.0) + (
+                perf_counter() - start_s
+            )
+        return contour_dict
 
     selected_points = trajectory_samples.copy().sort_values("valid_time").reset_index(drop=True)
     contour_by_hour: dict[int, list[dict[str, Any]]] = {}
     final_extrema_contours_by_hour: dict[int, dict[str, Any]] = {}
     ghost_forward_advected_cells_by_hour: dict[int, list[dict[str, Any]]] = {}
     ghost_forward_advected_cells_timevarying_by_hour: dict[int, list[dict[str, Any]]] = {}
-    dynamic_ghost_contour_cache = dict(gph_hourly_contours)
 
-    for _, row in tqdm(
-        selected_points.iterrows(),
+    for row in tqdm(
+        selected_points.itertuples(index=False),
         total=len(selected_points),
         desc="Tracing gradient contours",
         unit="point",
     ):
-        step_hour = int(row["step_hour"])
-        t_key = _nearest_hour_timestamp(row["valid_time"])
-        contour_dict = gph_hourly_contours.get(t_key)
-        if contour_dict is None:
-            contour_by_hour[step_hour] = []
-            final_extrema_contours_by_hour[step_hour] = _empty_final_extrema_contours(
-                "none exist"
-            )
-            ghost_forward_advected_cells_by_hour[step_hour] = []
-            ghost_forward_advected_cells_timevarying_by_hour[step_hour] = []
-            continue
+        point_start_s = perf_counter()
+        load_s = 0.0
+        ghost_static_s = 0.0
+        ghost_dynamic_s = 0.0
+        bounds_s = 0.0
+        dec_trace_s = 0.0
+        inc_trace_s = 0.0
+        clip_s = 0.0
+        extrema_s = 0.0
+        finalize_s = 0.0
+        step_hour = int(row.step_hour)
+        t_key = _nearest_hour_timestamp(row.valid_time)
 
-        gph_frame = gph_hourly_925_m.sel(valid_time=np.datetime64(t_key))
-        lon0 = float(row["longitude_360"])
-        lat0 = float(row["latitude"])
-        try:
-            uv_frame = uv_hourly_925.sel(valid_time=np.datetime64(t_key))
-        except Exception:
-            uv_frame = uv_hourly_925.sel(valid_time=np.datetime64(t_key), method="nearest")
+        load_start_s = perf_counter()
+        contour_dict = _get_contour_hour(t_key)
+        gph_frame = _get_gph_hour(t_key)
+        lon0 = float(row.longitude_360)
+        lat0 = float(row.latitude)
+        uv_frame = _get_uv_hour(t_key)
+        load_s += perf_counter() - load_start_s
 
+        ghost_static_start_s = perf_counter()
         ghost_points = _forward_advect_contour_parallel_speed(
             uv_frame,
             contour_dict,
@@ -1059,6 +1241,7 @@ def build_export_payload(
             substeps=GHOST_SUBSTEPS_PER_HOUR,
             earth_radius_m=EARTH_RADIUS_M,
         )
+        ghost_static_s += perf_counter() - ghost_static_start_s
         ghost_forward_advected_cells_by_hour[step_hour] = [
             {
                 "forward_hour": int(idx + 1),
@@ -1068,18 +1251,21 @@ def build_export_payload(
             }
             for idx, (ghost_lon, ghost_lat) in enumerate(ghost_points)
         ]
+
+        ghost_dynamic_detail: dict[str, float] = {}
+        ghost_dynamic_start_s = perf_counter()
         dynamic_ghost_points = _forward_advect_contour_parallel_speed_timevarying(
-            uv_hourly_925,
-            gph_hourly_925_m,
-            contour_levels,
+            lambda ts: _get_uv_hour_timed(ts, ghost_dynamic_detail),
+            lambda ts: _get_contour_hour_timed(ts, ghost_dynamic_detail),
             t_key,
             lon0,
             lat0,
             hours=GHOST_FORWARD_HOURS,
             substeps=GHOST_SUBSTEPS_PER_HOUR,
             earth_radius_m=EARTH_RADIUS_M,
-            contour_cache=dynamic_ghost_contour_cache,
+            timing=ghost_dynamic_detail,
         )
+        ghost_dynamic_s += perf_counter() - ghost_dynamic_start_s
         ghost_forward_advected_cells_timevarying_by_hour[step_hour] = [
             {
                 "forward_hour": int(idx + 1),
@@ -1090,11 +1276,14 @@ def build_export_payload(
             for idx, (ghost_lon, ghost_lat) in enumerate(dynamic_ghost_points)
         ]
 
+        bounds_start_s = perf_counter()
         frame_lon_min = float(np.nanmin(np.asarray(gph_frame["longitude"].values, dtype=float)))
         frame_lon_max = float(np.nanmax(np.asarray(gph_frame["longitude"].values, dtype=float)))
         frame_lat_min = float(np.nanmin(np.asarray(gph_frame["latitude"].values, dtype=float)))
         frame_lat_max = float(np.nanmax(np.asarray(gph_frame["latitude"].values, dtype=float)))
+        bounds_s += perf_counter() - bounds_start_s
 
+        dec_trace_start_s = perf_counter()
         dec_trace = _trace_gradient_path(
             gph_frame,
             lon0,
@@ -1110,6 +1299,9 @@ def build_export_payload(
             max_steps=GRAD_MAX_STEPS,
             monotonic_tol=GRAD_MONOTONIC_TOL_M,
         )
+        dec_trace_s += perf_counter() - dec_trace_start_s
+
+        inc_trace_start_s = perf_counter()
         inc_trace = _trace_gradient_path(
             gph_frame,
             lon0,
@@ -1125,9 +1317,12 @@ def build_export_payload(
             max_steps=GRAD_MAX_STEPS,
             monotonic_tol=GRAD_MONOTONIC_TOL_M,
         )
+        inc_trace_s += perf_counter() - inc_trace_start_s
 
         long_end_a = np.array([dec_trace["final_lon"], dec_trace["final_lat"]], dtype=float)
         long_end_b = np.array([inc_trace["final_lon"], inc_trace["final_lat"]], dtype=float)
+
+        clip_start_s = perf_counter()
         clip_rect = _build_oriented_clip_rectangle(lon0, lat0, long_end_a, long_end_b)
 
         if clip_rect is None:
@@ -1139,7 +1334,9 @@ def build_export_payload(
                 lon_ref=lon0,
                 lat_ref=lat0,
             )
+        clip_s += perf_counter() - clip_start_s
 
+        extrema_start_s = perf_counter()
         dec_extrema_match = _nearest_contour_segment_to_point_from_dict(
             contour_dict,
             dec_trace["final_lon"],
@@ -1152,7 +1349,9 @@ def build_export_payload(
             inc_trace["final_lat"],
             max_dist_deg=360.0,
         )
+        extrema_s += perf_counter() - extrema_start_s
 
+        finalize_start_s = perf_counter()
         dec_contour = _final_contour_for_branch(dec_extrema_match, "decreasing")
         inc_contour = _final_contour_for_branch(inc_extrema_match, "increasing")
 
@@ -1160,6 +1359,41 @@ def build_export_payload(
         if not available:
             final_extrema_contours_by_hour[step_hour] = _empty_final_extrema_contours(
                 "none exist"
+            )
+            finalize_s += perf_counter() - finalize_start_s
+            point_total_s = perf_counter() - point_start_s
+            other_s = max(
+                point_total_s
+                - load_s
+                - ghost_static_s
+                - ghost_dynamic_s
+                - bounds_s
+                - dec_trace_s
+                - inc_trace_s
+                - clip_s
+                - extrema_s
+                - finalize_s,
+                0.0,
+            )
+            print(
+                f"[timing][Tracing gradient contours][point={step_hour}/{len(selected_points) - 1}] "
+                f"total={point_total_s:.3f}s "
+                f"load={load_s:.3f}s "
+                f"ghost_static={ghost_static_s:.3f}s "
+                f"ghost_dynamic={ghost_dynamic_s:.3f}s "
+                f"ghost_dynamic_load={ghost_dynamic_detail.get('load', 0.0):.3f}s "
+                f"ghost_dynamic_uv_hour_load={ghost_dynamic_detail.get('uv_hour_load', 0.0):.3f}s "
+                f"ghost_dynamic_contour_hour_build={ghost_dynamic_detail.get('contour_hour_build', 0.0):.3f}s "
+                f"ghost_dynamic_interp={ghost_dynamic_detail.get('interp', 0.0):.3f}s "
+                f"ghost_dynamic_tangent={ghost_dynamic_detail.get('tangent', 0.0):.3f}s "
+                f"ghost_dynamic_update={ghost_dynamic_detail.get('update', 0.0):.3f}s "
+                f"bounds={bounds_s:.3f}s "
+                f"dec_trace={dec_trace_s:.3f}s "
+                f"inc_trace={inc_trace_s:.3f}s "
+                f"clip={clip_s:.3f}s "
+                f"extrema={extrema_s:.3f}s "
+                f"finalize={finalize_s:.3f}s "
+                f"other={other_s:.3f}s"
             )
             continue
 
@@ -1180,6 +1414,42 @@ def build_export_payload(
             "lower_contour": lower,
             "higher_contour": higher,
         }
+        finalize_s += perf_counter() - finalize_start_s
+
+        point_total_s = perf_counter() - point_start_s
+        other_s = max(
+            point_total_s
+            - load_s
+            - ghost_static_s
+            - ghost_dynamic_s
+            - bounds_s
+            - dec_trace_s
+            - inc_trace_s
+            - clip_s
+            - extrema_s
+            - finalize_s,
+            0.0,
+        )
+        print(
+            f"[timing][Tracing gradient contours][point={step_hour}/{len(selected_points) - 1}] "
+            f"total={point_total_s:.3f}s "
+            f"load={load_s:.3f}s "
+            f"ghost_static={ghost_static_s:.3f}s "
+            f"ghost_dynamic={ghost_dynamic_s:.3f}s "
+            f"ghost_dynamic_load={ghost_dynamic_detail.get('load', 0.0):.3f}s "
+            f"ghost_dynamic_uv_hour_load={ghost_dynamic_detail.get('uv_hour_load', 0.0):.3f}s "
+            f"ghost_dynamic_contour_hour_build={ghost_dynamic_detail.get('contour_hour_build', 0.0):.3f}s "
+            f"ghost_dynamic_interp={ghost_dynamic_detail.get('interp', 0.0):.3f}s "
+            f"ghost_dynamic_tangent={ghost_dynamic_detail.get('tangent', 0.0):.3f}s "
+            f"ghost_dynamic_update={ghost_dynamic_detail.get('update', 0.0):.3f}s "
+            f"bounds={bounds_s:.3f}s "
+            f"dec_trace={dec_trace_s:.3f}s "
+            f"inc_trace={inc_trace_s:.3f}s "
+            f"clip={clip_s:.3f}s "
+            f"extrema={extrema_s:.3f}s "
+            f"finalize={finalize_s:.3f}s "
+            f"other={other_s:.3f}s"
+        )
 
     points: list[dict[str, Any]] = []
     for row in trajectory_samples.itertuples(index=False):
@@ -1316,9 +1586,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--start-lat", type=float, default=49.28)
     parser.add_argument("--start-lon", type=float, default=-123.12)
-    parser.add_argument("--start-time", type=str, default="2021-11-16T12:00:00")
+    parser.add_argument("--start-time", type=str, default="2021-11-12T15:00:00")
     parser.add_argument("--pressure-level", type=int, default=925)
-    parser.add_argument("--hours-back", type=int, default=198)
+    parser.add_argument("--hours-back", type=int, default=100)
     parser.add_argument("--substeps", type=int, default=4)
     parser.add_argument("--contour-min-m", type=float, default=560.0)
     parser.add_argument("--contour-max-m", type=float, default=940.0)

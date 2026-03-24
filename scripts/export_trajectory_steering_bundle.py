@@ -12,11 +12,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-try:
-    from tqdm.auto import tqdm
-except ImportError:
-    def tqdm(iterable=None, **_: Any):  # type: ignore[no-redef]
-        return iterable
+from tqdm.auto import tqdm
 
 from export_backward_trajectory_bundle import extract_contour_segments
 
@@ -123,6 +119,28 @@ def gph_gradient_m_per_100km(
     return scalar_gradient_magnitude_per_100km(gph_m, latitudes_deg, lon_offsets_deg)
 
 
+def _hemisphere_subset_bounds(
+    *,
+    start_lat: float,
+    start_lon_360: float,
+    ds_lat_min: float = -89.75,
+    ds_lat_max: float = 89.75,
+    ds_lon_min: float = 0.0,
+    ds_lon_max: float = 359.75,
+) -> tuple[float, float, float, float]:
+    if float(start_lat) >= 0.0:
+        lat_min = max(0.0, float(ds_lat_min))
+        lat_max = float(ds_lat_max)
+    else:
+        lat_min = float(ds_lat_min)
+        lat_max = min(0.0, float(ds_lat_max))
+
+    lon_half_start = 180.0 * np.floor(float(start_lon_360) / 180.0)
+    lon_min = max(float(ds_lon_min), lon_half_start)
+    lon_max = min(float(ds_lon_max), lon_half_start + 179.75)
+    return lat_min, lat_max, lon_min, lon_max
+
+
 def backward_integrate_trajectory_uv_regional(
     ds: xr.Dataset,
     *,
@@ -143,10 +161,14 @@ def backward_integrate_trajectory_uv_regional(
     t_nearest = ds_uv["valid_time"].sel(valid_time=t0, method="nearest").values
 
     start_lon_360 = float(start_lon) % 360.0
-    lon_min = max(0.0, start_lon_360 - lon_pad_west_deg)
-    lon_max = min(359.75, start_lon_360 + lon_pad_east_deg)
-    lat_min = max(-89.75, float(start_lat) - lat_pad_south_deg)
-    lat_max = min(89.75, float(start_lat) + lat_pad_north_deg)
+    lat_min, lat_max, lon_min, lon_max = _hemisphere_subset_bounds(
+        start_lat=float(start_lat),
+        start_lon_360=start_lon_360,
+        ds_lat_min=float(np.nanmin(np.asarray(ds_uv["latitude"].values, dtype=float))),
+        ds_lat_max=float(np.nanmax(np.asarray(ds_uv["latitude"].values, dtype=float))),
+        ds_lon_min=float(np.nanmin(np.asarray(ds_uv["longitude"].values, dtype=float))),
+        ds_lon_max=float(np.nanmax(np.asarray(ds_uv["longitude"].values, dtype=float))),
+    )
     window_start = np.datetime64(t_nearest) - np.timedelta64(hours_back + 2, "h")
 
     ds_uv = (
@@ -611,9 +633,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--start-lat", type=float, default=49.28)
     parser.add_argument("--start-lon", type=float, default=-123.12)
-    parser.add_argument("--start-time", type=str, default="2021-11-16T12:00:00")
+    parser.add_argument("--start-time", type=str, default="2021-11-12T15:00:00")
     parser.add_argument("--pressure-level", type=int, default=925)
-    parser.add_argument("--hours-back", type=int, default=198)
+    parser.add_argument("--hours-back", type=int, default=100)
     parser.add_argument("--substeps", type=int, default=4)
     parser.add_argument("--contour-step-m", type=float, default=20.0)
     parser.add_argument("--contour-buffer-steps", type=int, default=1)
