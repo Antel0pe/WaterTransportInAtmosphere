@@ -7,6 +7,7 @@ export type LayerToggles = {
   ivt: boolean;
   backwardTrajectory: boolean;
   trajectorySteering: boolean;
+  upperAirSupport: boolean;
 };
 
 type EvapParams = {
@@ -88,6 +89,16 @@ type TrajectorySteeringStyleParams = {
   contourOpacity: boolean;
   contourGradientRibbon: boolean;
   contourPulse: boolean;
+};
+
+type UpperAirSupportParams = {
+  ascentThreshold: number;
+  ascentOpacity: number;
+  ascentGamma: number;
+  divergenceThreshold: number;
+  arrowSpacing: number;
+  arrowScale: number;
+  arrowOpacity: number;
 };
 
 export const CONTOURS_PRESSURE_OPTIONS = [
@@ -172,6 +183,7 @@ type ControlsState = {
   temperatureDifference: TemperatureDifferenceParams;
   mslContours: MslContoursParams;
   trajectorySteeringStyle: TrajectorySteeringStyleParams;
+  upperAirSupport: UpperAirSupportParams;
   contoursPressure: ContoursPressure;
   windTrailsPressure: WindTrailsPressure;
 
@@ -186,6 +198,7 @@ type ControlsState = {
   setTemperatureDifference: (patch: Partial<TemperatureDifferenceParams>) => void;
   setMslContours: (patch: Partial<MslContoursParams>) => void;
   setTrajectorySteeringStyle: (patch: Partial<TrajectorySteeringStyleParams>) => void;
+  setUpperAirSupport: (patch: Partial<UpperAirSupportParams>) => void;
   setContoursPressure: (pressure: ContoursPressure) => void;
   setWindTrailsPressure: (pressure: WindTrailsPressure) => void;
 };
@@ -198,6 +211,7 @@ export const useControls = create<ControlsState>()(
       ivt: false,
       backwardTrajectory: false,
       trajectorySteering: true,
+      upperAirSupport: false,
     },
 
     mslContours: {
@@ -208,6 +222,15 @@ export const useControls = create<ControlsState>()(
       contourOpacity: false,
       contourGradientRibbon: false,
       contourPulse: true,
+    },
+    upperAirSupport: {
+      ascentThreshold: 0.18,
+      ascentOpacity: 0.78,
+      ascentGamma: 1.35,
+      divergenceThreshold: 0.38,
+      arrowSpacing: 2,
+      arrowScale: 1.1,
+      arrowOpacity: 0.82,
     },
     contoursPressure: "none",
     windTrailsPressure: "none",
@@ -317,6 +340,11 @@ export const useControls = create<ControlsState>()(
     setTrajectorySteeringStyle: (patch) =>
       set((s) => ({
         trajectorySteeringStyle: { ...s.trajectorySteeringStyle, ...patch },
+      })),
+
+    setUpperAirSupport: (patch) =>
+      set((s) => ({
+        upperAirSupport: { ...s.upperAirSupport, ...patch },
       })),
 
     setContoursPressure: (pressure) =>

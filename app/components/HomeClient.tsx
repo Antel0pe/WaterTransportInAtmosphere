@@ -89,6 +89,14 @@ const TrajectorySteeringLayer = dynamic(
   }
 );
 
+const UpperAirSupportLayer = dynamic(
+  () => import("./layers/UpperAirSupportLayer"),
+  {
+    ssr: false,
+    loading: () => <div style={{ width: "100%", height: "100%" }} />,
+  }
+);
+
 const TimeSlider = dynamic(() => import("./TimeSlider"), {
   ssr: false,
   loading: () => <div style={{ height: "100%" }} />,
@@ -139,6 +147,7 @@ export default function HomeClient() {
             <TemperatureDifferenceLayer />
             <MslContoursLayer />
             <TrajectorySteeringLayer />
+            <UpperAirSupportLayer />
             <BackwardTrajectoryLayer />
             {/* <WindUVArrowsLayer /> */}
             <WindTrailParticlesLayer heightTex={null} />

@@ -43,6 +43,7 @@ export default function TweakpaneControls() {
       ivt: s0.layers.ivt,
       backwardTrajectory: s0.layers.backwardTrajectory,
       trajectorySteering: s0.layers.trajectorySteering,
+      upperAirSupport: s0.layers.upperAirSupport,
 
       uAnomMin: s0.moisture.uAnomMin,
       uAnomMax: s0.moisture.uAnomMax,
@@ -101,6 +102,14 @@ export default function TweakpaneControls() {
       steeringContourOpacity: s0.trajectorySteeringStyle.contourOpacity,
       steeringContourGradientRibbon: s0.trajectorySteeringStyle.contourGradientRibbon,
       steeringContourPulse: s0.trajectorySteeringStyle.contourPulse,
+
+      upperAirAscentThreshold: s0.upperAirSupport.ascentThreshold,
+      upperAirAscentOpacity: s0.upperAirSupport.ascentOpacity,
+      upperAirAscentGamma: s0.upperAirSupport.ascentGamma,
+      upperAirDivergenceThreshold: s0.upperAirSupport.divergenceThreshold,
+      upperAirArrowSpacing: s0.upperAirSupport.arrowSpacing,
+      upperAirArrowScale: s0.upperAirSupport.arrowScale,
+      upperAirArrowOpacity: s0.upperAirSupport.arrowOpacity,
     };
 
     // ---- Reset ----
@@ -116,6 +125,7 @@ export default function TweakpaneControls() {
       temperatureDifference: { ...s0.temperatureDifference },
       mslContours: { ...s0.mslContours },
       trajectorySteeringStyle: { ...s0.trajectorySteeringStyle },
+      upperAirSupport: { ...s0.upperAirSupport },
       contoursPressure: s0.contoursPressure as ContoursPressure,
       windTrailsPressure: s0.windTrailsPressure as WindTrailsPressure,
     };
@@ -144,6 +154,7 @@ export default function TweakpaneControls() {
       st.setTemperatureDifference(defaults.temperatureDifference);
       st.setMslContours(defaults.mslContours);
       st.setTrajectorySteeringStyle(defaults.trajectorySteeringStyle);
+      st.setUpperAirSupport(defaults.upperAirSupport);
 
       // update tweakpane-bound object immediately
       ui.moisture = defaults.layers.moisture;
@@ -151,6 +162,7 @@ export default function TweakpaneControls() {
       ui.ivt = defaults.layers.ivt;
       ui.backwardTrajectory = defaults.layers.backwardTrajectory;
       ui.trajectorySteering = defaults.layers.trajectorySteering;
+      ui.upperAirSupport = defaults.layers.upperAirSupport;
 
       ui.uAnomMin = defaults.moisture.uAnomMin;
       ui.uAnomMax = defaults.moisture.uAnomMax;
@@ -212,6 +224,14 @@ export default function TweakpaneControls() {
       ui.steeringContourGradientRibbon = defaults.trajectorySteeringStyle.contourGradientRibbon;
       ui.steeringContourPulse = defaults.trajectorySteeringStyle.contourPulse;
 
+      ui.upperAirAscentThreshold = defaults.upperAirSupport.ascentThreshold;
+      ui.upperAirAscentOpacity = defaults.upperAirSupport.ascentOpacity;
+      ui.upperAirAscentGamma = defaults.upperAirSupport.ascentGamma;
+      ui.upperAirDivergenceThreshold = defaults.upperAirSupport.divergenceThreshold;
+      ui.upperAirArrowSpacing = defaults.upperAirSupport.arrowSpacing;
+      ui.upperAirArrowScale = defaults.upperAirSupport.arrowScale;
+      ui.upperAirArrowOpacity = defaults.upperAirSupport.arrowOpacity;
+
       pvButtonsApi?.setSelectedValue(defaults.pv.pressureLevel);
       divergenceButtonsApi?.setSelectedValue(defaults.divergence.pressureLevel);
       verticalVelocityButtonsApi?.setSelectedValue(
@@ -234,12 +254,18 @@ export default function TweakpaneControls() {
     const bTrajectorySteering = explainableLayersFolder.addBinding(ui, "trajectorySteering", {
       label: "Trajectory Steering",
     });
+    const bUpperAirSupport = explainableLayersFolder.addBinding(ui, "upperAirSupport", {
+      label: "Upper Air Support",
+    });
 
     bBackTraj.on("change", (e) => {
       useControls.getState().setLayer("backwardTrajectory", !!e.value);
     });
     bTrajectorySteering.on("change", (e) => {
       useControls.getState().setLayer("trajectorySteering", !!e.value);
+    });
+    bUpperAirSupport.on("change", (e) => {
+      useControls.getState().setLayer("upperAirSupport", !!e.value);
     });
 
     // ---- Data layers ----
@@ -281,6 +307,91 @@ export default function TweakpaneControls() {
       .addBinding(ui, "steeringContourPulse", { label: "Pulse" })
       .on("change", (e) => {
         useControls.getState().setTrajectorySteeringStyle({ contourPulse: !!e.value });
+      });
+
+    const upperAirSupportStyleFolder = pane.addFolder({
+      title: "Upper Air Support Style",
+    });
+
+    upperAirSupportStyleFolder
+      .addBinding(ui, "upperAirAscentThreshold", {
+        label: "Ascent Threshold",
+        min: 0.0,
+        max: 1.0,
+        step: 0.01,
+      })
+      .on("change", (e) => {
+        useControls
+          .getState()
+          .setUpperAirSupport({ ascentThreshold: Number(e.value) });
+      });
+
+    upperAirSupportStyleFolder
+      .addBinding(ui, "upperAirAscentOpacity", {
+        label: "Ascent Opacity",
+        min: 0.0,
+        max: 1.0,
+        step: 0.01,
+      })
+      .on("change", (e) => {
+        useControls.getState().setUpperAirSupport({ ascentOpacity: Number(e.value) });
+      });
+
+    upperAirSupportStyleFolder
+      .addBinding(ui, "upperAirAscentGamma", {
+        label: "Ascent Gamma",
+        min: 0.3,
+        max: 3.0,
+        step: 0.05,
+      })
+      .on("change", (e) => {
+        useControls.getState().setUpperAirSupport({ ascentGamma: Number(e.value) });
+      });
+
+    upperAirSupportStyleFolder
+      .addBinding(ui, "upperAirDivergenceThreshold", {
+        label: "Divergence Threshold",
+        min: 0.0,
+        max: 1.0,
+        step: 0.01,
+      })
+      .on("change", (e) => {
+        useControls
+          .getState()
+          .setUpperAirSupport({ divergenceThreshold: Number(e.value) });
+      });
+
+    upperAirSupportStyleFolder
+      .addBinding(ui, "upperAirArrowSpacing", {
+        label: "Arrow Spacing",
+        min: 1,
+        max: 6,
+        step: 1,
+      })
+      .on("change", (e) => {
+        useControls.getState().setUpperAirSupport({ arrowSpacing: Number(e.value) });
+      });
+
+    upperAirSupportStyleFolder
+      .addBinding(ui, "upperAirArrowScale", {
+        label: "Arrow Scale",
+        min: 0.2,
+        max: 3.0,
+        step: 0.05,
+      })
+      .on("change", (e) => {
+        useControls.getState().setUpperAirSupport({ arrowScale: Number(e.value) });
+      });
+
+    upperAirSupportStyleFolder
+      .addBinding(ui, "upperAirArrowOpacity", {
+        label: "Arrow Opacity",
+        min: 0.0,
+        max: 1.0,
+        step: 0.01,
+      })
+      .on("change", (e) => {
+        useControls.getState().setUpperAirSupport({ arrowOpacity: Number(e.value) });
       });
 
     // ---- Moisture params (sliders) ----
@@ -716,6 +827,13 @@ export default function TweakpaneControls() {
       }
     );
 
+    const unsubUpperAirSupportVis = useControls.subscribe(
+      (s) => s.layers.upperAirSupport,
+      (v) => {
+        ui.upperAirSupport = v;
+      }
+    );
+
     const unsubIVTParams = useControls.subscribe(
       (s) => s.ivt,
       (p) => {
@@ -786,6 +904,19 @@ export default function TweakpaneControls() {
         ui.temperatureDiffAlpha = p.uAlpha;
         ui.temperatureDiffContrast = p.uContrast;
         temperatureDiffButtonsApi?.setSelectedValue(p.pressureLevel);
+      }
+    );
+
+    const unsubUpperAirSupportParams = useControls.subscribe(
+      (s) => s.upperAirSupport,
+      (p) => {
+        ui.upperAirAscentThreshold = p.ascentThreshold;
+        ui.upperAirAscentOpacity = p.ascentOpacity;
+        ui.upperAirAscentGamma = p.ascentGamma;
+        ui.upperAirDivergenceThreshold = p.divergenceThreshold;
+        ui.upperAirArrowSpacing = p.arrowSpacing;
+        ui.upperAirArrowScale = p.arrowScale;
+        ui.upperAirArrowOpacity = p.arrowOpacity;
       }
     );
 
@@ -963,12 +1094,14 @@ export default function TweakpaneControls() {
       unsubIVTVis();
       unsubBackTrajVis();
       unsubTrajectorySteeringVis();
+      unsubUpperAirSupportVis();
       unsubIVTParams();
       unsubPVParams();
       unsubDivergenceParams();
       unsubVerticalVelocityParams();
       unsubTemperatureParams();
       unsubTemperatureDifferenceParams();
+      unsubUpperAirSupportParams();
       unsubMslParams();
       unsubContoursPressure();
       unsubWindPressure();

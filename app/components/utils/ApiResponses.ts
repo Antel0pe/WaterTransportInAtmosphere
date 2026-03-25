@@ -67,6 +67,33 @@ export function trajectorySteeringApiUrl() {
   return "/api/trajectory_steering";
 }
 
+export function upperAirSupportApiUrl() {
+  return "/api/upper_air_support";
+}
+
+function normalizeUpperAirSupportHourKey(hourKey: string) {
+  const trimmed = hourKey.trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2})/.exec(trimmed);
+  if (match) return `${match[1]}-${match[2]}-${match[3]}T${match[4]}:00`;
+
+  const dt = new Date(trimmed);
+  if (Number.isFinite(dt.getTime())) {
+    const y = dt.getUTCFullYear();
+    const mo = String(dt.getUTCMonth() + 1).padStart(2, "0");
+    const d = String(dt.getUTCDate()).padStart(2, "0");
+    const h = String(dt.getUTCHours()).padStart(2, "0");
+    return `${y}-${mo}-${d}T${h}:00`;
+  }
+
+  return trimmed;
+}
+
+export function upperAirSupportFrameApiUrl(hourKey: string) {
+  return `/api/upper_air_support/${encodeURIComponent(
+    normalizeUpperAirSupportHourKey(hourKey)
+  )}`;
+}
+
 export type BackwardTrajectoryContourSnippet = {
   level_m: number;
   gph_m: number;
@@ -268,4 +295,108 @@ export async function fetchTrajectorySteering(): Promise<TrajectorySteeringFile>
   }
 
   return (await res.json()) as TrajectorySteeringFile;
+}
+
+export type UpperAirSupportPoint = {
+  step_hour: number;
+  valid_time: string;
+  hour_key: string;
+  latitude: number;
+  longitude: number;
+  longitude_360: number;
+  frame_file: string;
+};
+
+export type UpperAirSupportSample = {
+  latitude: number;
+  longitude: number;
+  longitude_360: number;
+  ascent_pa_s: number;
+  divergence_s1: number;
+  u_wind_ms: number;
+  v_wind_ms: number;
+  wind_speed_ms: number;
+};
+
+export type UpperAirSupportFrame = {
+  step_hour: number;
+  valid_time: string;
+  hour_key: string;
+  latitude: number;
+  longitude: number;
+  longitude_360: number;
+  grid_latitudes: number[];
+  grid_longitudes: number[];
+  samples: UpperAirSupportSample[];
+};
+
+export type UpperAirSupportManifest = {
+  metadata: {
+    target_name: string;
+    start_lat: number;
+    start_lon: number;
+    start_lon_360: number;
+    requested_start_time: string;
+    resolved_start_time: string;
+    trajectory_pressure_level_hpa: number;
+    vertical_velocity_level_hpa: number;
+    divergence_level_hpa: number;
+    wind_level_hpa: number;
+    hours_back_requested: number;
+    hours_back_actual: number;
+    substeps: number;
+    field_half_span_lat_deg: number;
+    field_half_span_lon_deg: number;
+    sample_spacing_deg: number;
+    box_size: number;
+    source_grid_spacing_deg: number;
+    generated_at_utc: string;
+  };
+  summary: {
+    point_count: number;
+    frame_count: number;
+    sample_count_per_frame: number;
+    ascent_p75_pa_s: number;
+    ascent_p90_pa_s: number;
+    ascent_p95_pa_s: number;
+    ascent_max_pa_s: number;
+    divergence_p75_s1: number;
+    divergence_p90_s1: number;
+    divergence_p95_s1: number;
+    divergence_max_s1: number;
+    wind_p75_ms: number;
+    wind_p90_ms: number;
+    wind_p95_ms: number;
+    wind_max_ms: number;
+  };
+  points: UpperAirSupportPoint[];
+  points_by_hour: Record<string, UpperAirSupportPoint>;
+  available_hour_keys: string[];
+};
+
+export async function fetchUpperAirSupportManifest(): Promise<UpperAirSupportManifest> {
+  const res = await fetch(upperAirSupportApiUrl());
+
+  if (!res.ok) {
+    throw new Error(
+      `Upper air support manifest fetch failed (${res.status} ${res.statusText})`
+    );
+  }
+
+  return (await res.json()) as UpperAirSupportManifest;
+}
+
+export async function fetchUpperAirSupportFrame(
+  hourKey: string
+): Promise<UpperAirSupportFrame> {
+  const normalizedHourKey = normalizeUpperAirSupportHourKey(hourKey);
+  const res = await fetch(upperAirSupportFrameApiUrl(normalizedHourKey));
+
+  if (!res.ok) {
+    throw new Error(
+      `Upper air support frame fetch failed (${res.status} ${res.statusText})`
+    );
+  }
+
+  return (await res.json()) as UpperAirSupportFrame;
 }

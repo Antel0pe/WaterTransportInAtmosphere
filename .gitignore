@@ -13,6 +13,9 @@ data/
 /public/gph_contours/*
 /public/backward_trajectory/*
 /public/trajectory_steering/*
+/public/upper_air_support/*
+
+tmp
 # dependencies
 /node_modules
 /.pnp
