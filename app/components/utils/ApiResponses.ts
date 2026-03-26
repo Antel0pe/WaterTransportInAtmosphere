@@ -303,20 +303,14 @@ export type UpperAirSupportPoint = {
   hour_key: string;
   latitude: number;
   longitude: number;
-  longitude_360: number;
-  frame_file: string;
 };
 
-export type UpperAirSupportSample = {
-  latitude: number;
-  longitude: number;
-  longitude_360: number;
-  ascent_pa_s: number;
-  divergence_s1: number;
-  u_wind_ms: number;
-  v_wind_ms: number;
-  wind_speed_ms: number;
-};
+export type UpperAirSupportCell = [
+  ascent_pa_s: number,
+  divergence_s1: number,
+  u_wind_ms: number,
+  v_wind_ms: number,
+] | null;
 
 export type UpperAirSupportFrame = {
   step_hour: number;
@@ -324,10 +318,9 @@ export type UpperAirSupportFrame = {
   hour_key: string;
   latitude: number;
   longitude: number;
-  longitude_360: number;
   grid_latitudes: number[];
   grid_longitudes: number[];
-  samples: UpperAirSupportSample[];
+  cells: UpperAirSupportCell[];
 };
 
 export type UpperAirSupportManifest = {
@@ -370,8 +363,6 @@ export type UpperAirSupportManifest = {
     wind_max_ms: number;
   };
   points: UpperAirSupportPoint[];
-  points_by_hour: Record<string, UpperAirSupportPoint>;
-  available_hour_keys: string[];
 };
 
 export async function fetchUpperAirSupportManifest(): Promise<UpperAirSupportManifest> {

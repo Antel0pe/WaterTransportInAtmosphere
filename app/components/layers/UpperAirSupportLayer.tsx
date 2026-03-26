@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import * as BufferGeometryUtils from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { useEarthLayer } from "./EarthBase";
@@ -10,7 +10,6 @@ import {
   type UpperAirSupportFrame,
   type UpperAirSupportManifest,
   type UpperAirSupportPoint,
-  type UpperAirSupportSample,
 } from "../utils/ApiResponses";
 import { latLonToVec3 } from "../utils/EarthUtils";
 import { useControls } from "../../state/controlsStore";
@@ -23,6 +22,16 @@ type UpperAirSupportStyleState = {
   arrowSpacing: number;
   arrowScale: number;
   arrowOpacity: number;
+};
+
+type UpperAirSupportSample = {
+  latitude: number;
+  longitude: number;
+  ascent_pa_s: number;
+  divergence_s1: number;
+  u_wind_ms: number;
+  v_wind_ms: number;
+  wind_speed_ms: number;
 };
 
 type FrameGrid = {
@@ -45,6 +54,15 @@ type FrameDataEntry =
   | { status: "ready"; frame: UpperAirSupportFrame }
   | { status: "missing" | "error" };
 
+type FrameTransition = {
+  fromFrames: THREE.Object3D[];
+  toFrames: THREE.Object3D[];
+  startMs: number;
+  durationMs: number;
+};
+
+const FRAME_TRANSITION_MS = 180;
+
 function clamp01(x: number) {
   return THREE.MathUtils.clamp(x, 0, 1);
 }
@@ -64,10 +82,6 @@ function toHourlyKey(timestamp: string) {
   }
 
   return trimmed;
-}
-
-function sampleKey(lat: number, lon: number) {
-  return `${lat.toFixed(4)}|${lon.toFixed(4)}`;
 }
 
 function splitPolyline(
@@ -192,6 +206,9 @@ function makeVertexAlphaMesh(
     polygonOffset: true,
     polygonOffsetFactor: 1,
     polygonOffsetUnits: 1,
+    uniforms: {
+      uAlphaMul: { value: 1.0 },
+    },
     vertexShader: `
       attribute vec3 color;
       attribute float alpha;
@@ -207,9 +224,10 @@ function makeVertexAlphaMesh(
     fragmentShader: `
       varying vec3 vColor;
       varying float vAlpha;
+      uniform float uAlphaMul;
 
       void main() {
-        gl_FragColor = vec4(vColor, vAlpha);
+        gl_FragColor = vec4(vColor, vAlpha * uAlphaMul);
       }
     `,
   });
@@ -230,14 +248,11 @@ function buildFrameGrid(
   const nLat = lats.length;
   const nLon = lons.length;
   const count = nLat * nLon;
+  const cells = frame.cells ?? [];
   if (nLat < 2 || nLon < 2 || count === 0) return null;
+  if (cells.length < count) return null;
 
   const positions = new Float32Array(count * 3);
-  const sampleMap = new Map<string, UpperAirSupportSample>();
-  for (const sample of frame.samples) {
-    sampleMap.set(sampleKey(sample.latitude, sample.longitude), sample);
-  }
-
   const samples: Array<Array<UpperAirSupportSample | undefined>> = Array.from(
     { length: nLat },
     () => Array<UpperAirSupportSample | undefined>(nLon)
@@ -248,7 +263,18 @@ function buildFrameGrid(
     for (let lonIdx = 0; lonIdx < nLon; lonIdx++) {
       const lat = lats[latIdx];
       const lon = lons[lonIdx];
-      samples[latIdx][lonIdx] = sampleMap.get(sampleKey(lat, lon));
+      const cell = cells[vertexIndex];
+      samples[latIdx][lonIdx] = cell
+        ? {
+            latitude: lat,
+            longitude: lon,
+            ascent_pa_s: cell[0],
+            divergence_s1: cell[1],
+            u_wind_ms: cell[2],
+            v_wind_ms: cell[3],
+            wind_speed_ms: Math.hypot(cell[2], cell[3]),
+          }
+        : undefined;
 
       const v = latLonToVec3(lat, lon, radius + lift);
       positions[vertexIndex * 3 + 0] = v.x;
@@ -280,6 +306,62 @@ function buildFrameGrid(
   }
 
   return { lats, lons, nLat, nLon, samples, positions, indices };
+}
+
+function applyAlphaMulToMaterial(
+  material: THREE.Material | THREE.Material[],
+  alphaMul: number
+) {
+  const materials = Array.isArray(material) ? material : [material];
+  for (const mat of materials) {
+    if (mat instanceof THREE.ShaderMaterial) {
+      const uniform = mat.uniforms?.uAlphaMul;
+      if (uniform) {
+        uniform.value = alphaMul;
+        continue;
+      }
+    }
+
+    const fadeable = mat as THREE.Material & {
+      opacity?: number;
+      transparent?: boolean;
+      userData: Record<string, unknown>;
+    };
+    if (typeof fadeable.opacity !== "number") continue;
+    const baseOpacity =
+      typeof fadeable.userData.__baseOpacity === "number"
+        ? (fadeable.userData.__baseOpacity as number)
+        : fadeable.opacity;
+    fadeable.userData.__baseOpacity = baseOpacity;
+    fadeable.transparent = true;
+    fadeable.opacity = baseOpacity * alphaMul;
+  }
+}
+
+function setObjectAlphaMul(obj: THREE.Object3D, alphaMul: number) {
+  obj.traverse((node) => {
+    const material = (node as THREE.Object3D & {
+      material?: THREE.Material | THREE.Material[];
+    }).material;
+    if (material) applyAlphaMulToMaterial(material, alphaMul);
+  });
+}
+
+function setObjectsAlphaMul(objects: THREE.Object3D[], alphaMul: number) {
+  for (const obj of objects) setObjectAlphaMul(obj, alphaMul);
+}
+
+function setObjectsVisible(objects: THREE.Object3D[], visible: boolean) {
+  for (const obj of objects) obj.visible = visible;
+}
+
+function sameObjects(a: THREE.Object3D[], b: THREE.Object3D[]) {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 function makeArrowGeometry() {
@@ -373,6 +455,7 @@ function makeAscentMesh(
 
 function makeDivergenceArrowMesh(
   frameGrid: FrameGrid,
+  frame: UpperAirSupportFrame,
   manifest: UpperAirSupportManifest,
   style: UpperAirSupportStyleState,
   radius: number,
@@ -397,7 +480,14 @@ function makeDivergenceArrowMesh(
   const divergenceThreshold = clamp01(style.divergenceThreshold) * divergenceRef;
   const spacing = Math.max(1, Math.round(style.arrowSpacing));
 
-  const candidates: UpperAirSupportSample[] = [];
+  const candidates: Array<{
+    sample: UpperAirSupportSample;
+    latIdx: number;
+    lonIdx: number;
+    position: THREE.Vector3;
+  }> = [];
+  const divergenceCenter = new THREE.Vector3();
+  let divergenceWeightSum = 0;
   for (let latIdx = 0; latIdx < frameGrid.nLat; latIdx += spacing) {
     for (let lonIdx = 0; lonIdx < frameGrid.nLon; lonIdx += spacing) {
       const sample = frameGrid.samples[latIdx][lonIdx];
@@ -405,11 +495,15 @@ function makeDivergenceArrowMesh(
       if (sample.ascent_pa_s < ascentThreshold) continue;
       if (sample.divergence_s1 < divergenceThreshold) continue;
       if (sample.wind_speed_ms <= 0.0) continue;
-      candidates.push(sample);
+      const position = latLonToVec3(sample.latitude, sample.longitude, radius + lift);
+      candidates.push({ sample, latIdx, lonIdx, position });
+      divergenceCenter.add(position.clone().multiplyScalar(sample.divergence_s1));
+      divergenceWeightSum += sample.divergence_s1;
     }
   }
 
   if (candidates.length === 0) return null;
+  if (divergenceWeightSum > 0) divergenceCenter.multiplyScalar(1 / divergenceWeightSum);
 
   const geom = makeArrowGeometry();
   const mat = new THREE.MeshBasicMaterial({
@@ -428,30 +522,69 @@ function makeDivergenceArrowMesh(
   const tmpQuat = new THREE.Quaternion();
   const tmpScale = new THREE.Vector3();
   const tmpMat = new THREE.Matrix4();
+  const earthRadiusMeters = 6_371_000.0;
 
   let idx = 0;
-  for (const sample of candidates) {
+  for (const candidate of candidates) {
+    const { sample, latIdx, lonIdx, position } = candidate;
     const { p, east, north } = tangentEastNorth(
       sample.latitude,
       sample.longitude,
       radius + lift
     );
 
-    const dir = east
-      .clone()
-      .multiplyScalar(sample.u_wind_ms)
-      .add(north.clone().multiplyScalar(sample.v_wind_ms));
-    if (dir.lengthSq() < 1e-12) continue;
-    dir.normalize();
+    const normal = p.clone().normalize();
+    const outward = new THREE.Vector3();
 
-    tmpQuat.setFromUnitVectors(up, dir);
+    const west = lonIdx > 0 ? frameGrid.samples[latIdx][lonIdx - 1] : undefined;
+    const eastSample =
+      lonIdx + 1 < frameGrid.nLon ? frameGrid.samples[latIdx][lonIdx + 1] : undefined;
+    if (west && eastSample) {
+      const dLonDeg = frameGrid.lons[lonIdx + 1] - frameGrid.lons[lonIdx - 1];
+      const dxMeters =
+        THREE.MathUtils.degToRad(Math.abs(dLonDeg)) *
+        earthRadiusMeters *
+        Math.max(Math.cos(THREE.MathUtils.degToRad(sample.latitude)), 1e-6);
+      if (dxMeters > 0) {
+        const dDx = (eastSample.divergence_s1 - west.divergence_s1) / dxMeters;
+        outward.add(east.clone().multiplyScalar(-dDx));
+      }
+    }
+
+    const south = latIdx > 0 ? frameGrid.samples[latIdx - 1][lonIdx] : undefined;
+    const northSample =
+      latIdx + 1 < frameGrid.nLat ? frameGrid.samples[latIdx + 1][lonIdx] : undefined;
+    if (south && northSample) {
+      const dLatDeg = frameGrid.lats[latIdx + 1] - frameGrid.lats[latIdx - 1];
+      const dyMeters =
+        THREE.MathUtils.degToRad(Math.abs(dLatDeg)) * earthRadiusMeters;
+      if (dyMeters > 0) {
+        const dDy = (northSample.divergence_s1 - south.divergence_s1) / dyMeters;
+        outward.add(north.clone().multiplyScalar(-dDy));
+      }
+    }
+
+    if (outward.lengthSq() < 1e-12 && divergenceWeightSum > 0) {
+      outward.copy(position).sub(divergenceCenter);
+      outward.sub(normal.clone().multiplyScalar(outward.dot(normal)));
+    }
+
+    if (outward.lengthSq() < 1e-12) {
+      outward.copy(position).sub(latLonToVec3(frame.latitude, frame.longitude, radius + lift));
+      outward.sub(normal.clone().multiplyScalar(outward.dot(normal)));
+    }
+
+    if (outward.lengthSq() < 1e-12) continue;
+    outward.normalize();
+
+    tmpQuat.setFromUnitVectors(up, outward);
 
     const divergenceNorm = clamp01(sample.divergence_s1 / divergenceRef);
     const windNorm = clamp01(sample.wind_speed_ms / windRef);
     const len =
       style.arrowScale *
-      (0.7 + 0.6 * windNorm) *
-      (0.35 + 0.85 * Math.pow(divergenceNorm, 0.85));
+      (0.78 + 0.22 * windNorm) *
+      (0.32 + 1.38 * Math.pow(divergenceNorm, 0.9));
 
     tmpScale.set(1, len, 1);
     tmpMat.compose(p, tmpQuat, tmpScale);
@@ -540,6 +673,7 @@ function buildFrameVisual(
   group.add(makeAscentMesh(frameGrid, manifest, style));
   const arrows = makeDivergenceArrowMesh(
     frameGrid,
+    frame,
     manifest,
     style,
     radius,
@@ -571,8 +705,15 @@ function setActiveObjects(
 export default function UpperAirSupportLayer() {
   const enabled = useControls((s) => s.layers.upperAirSupport);
   const upperAirSupport = useControls((s) => s.upperAirSupport);
-  const { engineReady, sceneRef, globeRef, timestamp, signalReady } =
-    useEarthLayer("upper-air-support");
+  const {
+    engineReady,
+    sceneRef,
+    globeRef,
+    timestamp,
+    signalReady,
+    registerFramePass,
+    unregisterFramePass,
+  } = useEarthLayer("upper-air-support");
 
   const style = useMemo<UpperAirSupportStyleState>(
     () => ({ ...upperAirSupport }),
@@ -591,13 +732,121 @@ export default function UpperAirSupportLayer() {
   const markerObjectsByHourKeyRef = useRef<Map<string, THREE.Object3D[]>>(new Map());
   const frameDataCacheRef = useRef<Map<string, FrameDataEntry>>(new Map());
   const frameObjectsByHourKeyRef = useRef<Map<string, THREE.Object3D[]>>(new Map());
+  const frameTransitionRef = useRef<FrameTransition | null>(null);
 
   const activeMarkerObjectsRef = useRef<THREE.Object3D[]>([]);
   const activeFrameObjectsRef = useRef<THREE.Object3D[]>([]);
 
+  const orderedHourKeys = useMemo(
+    () =>
+      manifest
+        ? [...manifest.points]
+            .map((point) => point.hour_key)
+            .sort((a, b) => a.localeCompare(b))
+        : [],
+    [manifest]
+  );
+
+  const pointsByHourKey = useMemo(() => {
+    if (!manifest) return new Map<string, UpperAirSupportPoint>();
+    return new Map(manifest.points.map((point) => [point.hour_key, point]));
+  }, [manifest]);
+
+  const clearFrameTransition = useCallback((showTarget: boolean) => {
+    const transition = frameTransitionRef.current;
+    if (!transition) return;
+
+    setObjectsAlphaMul(transition.fromFrames, 1);
+    setObjectsAlphaMul(transition.toFrames, 1);
+    setObjectsVisible(transition.fromFrames, false);
+
+    if (showTarget) {
+      setObjectsVisible(transition.toFrames, true);
+      activeFrameObjectsRef.current = transition.toFrames;
+    } else {
+      setObjectsVisible(transition.toFrames, false);
+      activeFrameObjectsRef.current = [];
+    }
+
+    frameTransitionRef.current = null;
+  }, []);
+
+  const hideActiveFrames = useCallback(() => {
+    clearFrameTransition(false);
+    setObjectsAlphaMul(activeFrameObjectsRef.current, 1);
+    setObjectsVisible(activeFrameObjectsRef.current, false);
+    activeFrameObjectsRef.current = [];
+  }, [clearFrameTransition]);
+
+  const transitionToFrameObjects = useCallback(
+    (nextFrames: THREE.Object3D[]) => {
+      clearFrameTransition(true);
+
+      const prevFrames = activeFrameObjectsRef.current;
+      if (sameObjects(prevFrames, nextFrames)) {
+        setObjectsVisible(nextFrames, true);
+        setObjectsAlphaMul(nextFrames, 1);
+        activeFrameObjectsRef.current = nextFrames;
+        return;
+      }
+
+      if (prevFrames.length === 0) {
+        setObjectsVisible(nextFrames, true);
+        setObjectsAlphaMul(nextFrames, 1);
+        activeFrameObjectsRef.current = nextFrames;
+        return;
+      }
+
+      setObjectsVisible(prevFrames, true);
+      setObjectsAlphaMul(prevFrames, 1);
+      setObjectsVisible(nextFrames, true);
+      setObjectsAlphaMul(nextFrames, 0);
+      activeFrameObjectsRef.current = nextFrames;
+      frameTransitionRef.current = {
+        fromFrames: prevFrames,
+        toFrames: nextFrames,
+        startMs: performance.now(),
+        durationMs: FRAME_TRANSITION_MS,
+      };
+    },
+    [clearFrameTransition]
+  );
+
   useEffect(() => {
     latestTimestampRef.current = timestamp;
   }, [timestamp]);
+
+  useEffect(() => {
+    if (!engineReady) return;
+
+    const passKey = "upper-air-support-transition";
+    registerFramePass(passKey, (tick) => {
+      const transition = frameTransitionRef.current;
+      if (!transition) return;
+
+      const alpha = clamp01(
+        (tick.t - transition.startMs) / Math.max(transition.durationMs, 1)
+      );
+      setObjectsVisible(transition.fromFrames, true);
+      setObjectsVisible(transition.toFrames, true);
+      setObjectsAlphaMul(transition.fromFrames, 1 - alpha);
+      setObjectsAlphaMul(transition.toFrames, alpha);
+
+      if (alpha >= 1) {
+        setObjectsAlphaMul(transition.fromFrames, 1);
+        setObjectsAlphaMul(transition.toFrames, 1);
+        setObjectsVisible(transition.fromFrames, false);
+        setObjectsVisible(transition.toFrames, true);
+        activeFrameObjectsRef.current = transition.toFrames;
+        frameTransitionRef.current = null;
+      }
+    });
+
+    return () => {
+      unregisterFramePass(passKey);
+      clearFrameTransition(true);
+    };
+  }, [engineReady, registerFramePass, unregisterFramePass, clearFrameTransition]);
 
   useEffect(() => {
     if (!engineReady) return;
@@ -617,12 +866,7 @@ export default function UpperAirSupportLayer() {
         markerObjectsByHourKeyRef.current,
         activeMarkerObjectsRef
       );
-      setActiveObjects(
-        false,
-        latestTimestampRef.current,
-        frameObjectsByHourKeyRef.current,
-        activeFrameObjectsRef
-      );
+      hideActiveFrames();
 
       for (const objects of frameObjectsByHourKeyRef.current.values()) {
         for (const obj of objects) {
@@ -645,7 +889,7 @@ export default function UpperAirSupportLayer() {
       rootRef.current = null;
       manifestLoadingRef.current = false;
     };
-  }, [engineReady, sceneRef, globeRef]);
+  }, [engineReady, sceneRef, globeRef, hideActiveFrames]);
 
   useEffect(() => {
     if (!engineReady || !enabled || manifest || manifestFailed) return;
@@ -654,24 +898,25 @@ export default function UpperAirSupportLayer() {
     let cancelled = false;
     manifestLoadingRef.current = true;
 
-    (async () => {
-      try {
-        const nextManifest = await fetchUpperAirSupportManifest();
+    void fetchUpperAirSupportManifest()
+      .then((nextManifest) => {
         if (cancelled) return;
         setManifest(nextManifest);
         setManifestFailed(false);
-      } catch (err) {
+      })
+      .catch((err) => {
         if (cancelled) return;
         setManifestFailed(true);
         console.error("Failed to load upper air support manifest", err);
         signalReady(latestTimestampRef.current);
-      } finally {
-        if (!cancelled) manifestLoadingRef.current = false;
-      }
-    })();
+      })
+      .finally(() => {
+        manifestLoadingRef.current = false;
+      });
 
     return () => {
       cancelled = true;
+      manifestLoadingRef.current = false;
     };
   }, [engineReady, enabled, manifest, manifestFailed, signalReady]);
 
@@ -704,12 +949,7 @@ export default function UpperAirSupportLayer() {
   useEffect(() => {
     if (!manifest) return;
 
-    setActiveObjects(
-      false,
-      latestTimestampRef.current,
-      frameObjectsByHourKeyRef.current,
-      activeFrameObjectsRef
-    );
+    hideActiveFrames();
     for (const objects of frameObjectsByHourKeyRef.current.values()) {
       for (const obj of objects) {
         disposeObjectTree(obj);
@@ -718,7 +958,7 @@ export default function UpperAirSupportLayer() {
     }
     frameObjectsByHourKeyRef.current.clear();
     setCacheVersion((v) => v + 1);
-  }, [manifest, style]);
+  }, [manifest, style, hideActiveFrames]);
 
   useEffect(() => {
     if (!engineReady) return;
@@ -734,23 +974,13 @@ export default function UpperAirSupportLayer() {
     );
 
     if (!enabled) {
-      setActiveObjects(
-        false,
-        timestamp,
-        frameObjectsByHourKeyRef.current,
-        activeFrameObjectsRef
-      );
+      hideActiveFrames();
       signalReady(timestamp);
       return;
     }
 
     if (manifestFailed) {
-      setActiveObjects(
-        false,
-        timestamp,
-        frameObjectsByHourKeyRef.current,
-        activeFrameObjectsRef
-      );
+      hideActiveFrames();
       signalReady(timestamp);
       return;
     }
@@ -758,19 +988,14 @@ export default function UpperAirSupportLayer() {
     if (!manifest || !root) return;
 
     const currentHourKey = toHourlyKey(timestamp);
-    const currentIndex = manifest.available_hour_keys.indexOf(currentHourKey);
+    const currentIndex = orderedHourKeys.indexOf(currentHourKey);
     if (currentIndex === -1) {
-      setActiveObjects(
-        false,
-        timestamp,
-        frameObjectsByHourKeyRef.current,
-        activeFrameObjectsRef
-      );
+      hideActiveFrames();
       signalReady(timestamp);
       return;
     }
 
-    const desiredHourKeys = manifest.available_hour_keys.slice(currentIndex, currentIndex + 3);
+    const desiredHourKeys = orderedHourKeys.slice(currentIndex, currentIndex + 3);
     const desiredSet = new Set(desiredHourKeys);
 
     for (const desiredHourKey of desiredHourKeys) {
@@ -784,7 +1009,7 @@ export default function UpperAirSupportLayer() {
         continue;
       }
       if (existing?.status === "loading") continue;
-      if (!manifest.points_by_hour[desiredHourKey]) {
+      if (!pointsByHourKey.has(desiredHourKey)) {
         frameDataCacheRef.current.set(desiredHourKey, { status: "missing" });
         continue;
       }
@@ -809,8 +1034,21 @@ export default function UpperAirSupportLayer() {
       frameDataCacheRef.current.set(desiredHourKey, { status: "loading", promise });
     }
 
+    const protectedFrameObjects = new Set(
+      [
+        ...activeFrameObjectsRef.current,
+        ...(frameTransitionRef.current
+          ? [
+              ...frameTransitionRef.current.fromFrames,
+              ...frameTransitionRef.current.toFrames,
+            ]
+          : []),
+      ]
+    );
+
     for (const [hourKey, objects] of frameObjectsByHourKeyRef.current.entries()) {
       if (desiredSet.has(hourKey)) continue;
+      if (objects.some((obj) => protectedFrameObjects.has(obj))) continue;
       for (const obj of objects) {
         disposeObjectTree(obj);
         obj.removeFromParent();
@@ -831,41 +1069,30 @@ export default function UpperAirSupportLayer() {
         root.add(group);
         frameObjectsByHourKeyRef.current.set(currentHourKey, [group]);
       }
-      setActiveObjects(
-        true,
-        timestamp,
-        frameObjectsByHourKeyRef.current,
-        activeFrameObjectsRef
+      transitionToFrameObjects(
+        frameObjectsByHourKeyRef.current.get(currentHourKey) ?? []
       );
       signalReady(timestamp);
       return;
     }
 
     if (currentEntry?.status === "missing" || currentEntry?.status === "error") {
-      setActiveObjects(
-        false,
-        timestamp,
-        frameObjectsByHourKeyRef.current,
-        activeFrameObjectsRef
-      );
+      hideActiveFrames();
       signalReady(timestamp);
       return;
     }
-
-    setActiveObjects(
-      false,
-      timestamp,
-      frameObjectsByHourKeyRef.current,
-      activeFrameObjectsRef
-    );
   }, [
     engineReady,
     enabled,
     timestamp,
     manifest,
+    orderedHourKeys,
+    pointsByHourKey,
     manifestFailed,
     cacheVersion,
     style,
+    hideActiveFrames,
+    transitionToFrameObjects,
     signalReady,
   ]);
 

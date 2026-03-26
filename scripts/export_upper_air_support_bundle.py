@@ -362,7 +362,7 @@ def build_export_payload(
         divergence_values_all.append(_safe_positive(divergence_grid))
         wind_values_all.append(_safe_positive(wind_speed_grid))
 
-        samples: list[dict[str, Any]] = []
+        cells: list[list[float] | None] = []
         for lat_idx, lat_val in enumerate(local_lats):
             for lon_idx, lon_val_unwrapped in enumerate(local_lons_unwrapped):
                 ascent_val = float(ascent_grid[lat_idx, lon_idx])
@@ -377,18 +377,15 @@ def build_export_payload(
                     and np.isfinite(v_val)
                     and np.isfinite(wind_val)
                 ):
+                    cells.append(None)
                     continue
-                samples.append(
-                    {
-                        "latitude": round(float(lat_val), 4),
-                        "longitude": round(float(lon_val_unwrapped), 4),
-                        "longitude_360": round(float(lon_val_unwrapped) % 360.0, 4),
-                        "ascent_pa_s": round(ascent_val, 8),
-                        "divergence_s1": round(divergence_val, 10),
-                        "u_wind_ms": round(u_val, 4),
-                        "v_wind_ms": round(v_val, 4),
-                        "wind_speed_ms": round(wind_val, 4),
-                    }
+                cells.append(
+                    [
+                        round(ascent_val, 4),
+                        round(divergence_val, 8),
+                        round(u_val, 2),
+                        round(v_val, 2),
+                    ]
                 )
 
         hour_key = _hour_key(valid_time)
@@ -396,12 +393,11 @@ def build_export_payload(
             "step_hour": int(row.step_hour),
             "valid_time": _fmt_utc(valid_time),
             "hour_key": hour_key,
-            "latitude": round(lat0, 5),
-            "longitude": round(float(row.longitude), 5),
-            "longitude_360": round(lon0, 5),
-            "grid_latitudes": [round(float(x), 4) for x in local_lats],
-            "grid_longitudes": [round(float(x), 4) for x in local_lons_unwrapped],
-            "samples": samples,
+            "latitude": round(lat0, 2),
+            "longitude": round(float(row.longitude), 2),
+            "grid_latitudes": [round(float(x), 2) for x in local_lats],
+            "grid_longitudes": [round(float(x), 2) for x in local_lons_unwrapped],
+            "cells": cells,
         }
 
     ascent_p75 = _finite_percentile(ascent_values_all, 75.0, 0.0)
@@ -443,7 +439,7 @@ def build_export_payload(
         "summary": {
             "point_count": int(len(trajectory)),
             "frame_count": int(len(frames_by_hour)),
-            "sample_count_per_frame": int(len(next(iter(frames_by_hour.values()))["samples"]))
+            "sample_count_per_frame": int(len(next(iter(frames_by_hour.values()))["cells"]))
             if frames_by_hour
             else 0,
             "ascent_p75_pa_s": round(ascent_p75, 8),
@@ -475,19 +471,12 @@ def build_export_payload(
                 "step_hour": int(row.step_hour),
                 "valid_time": _fmt_utc(row.valid_time),
                 "hour_key": _hour_key(row.valid_time),
-                "latitude": round(float(row.latitude), 5),
-                "longitude": round(float(row.longitude), 5),
-                "longitude_360": round(float(row.longitude_360), 5),
-                "frame_file": _frame_filename(row.valid_time),
+                "latitude": round(float(row.latitude), 2),
+                "longitude": round(float(row.longitude), 2),
             }
             for row in trajectory.itertuples(index=False)
         ],
     }
-    manifest["points_by_hour"] = {
-        point["hour_key"]: point for point in manifest["points"]
-    }
-    manifest["available_hour_keys"] = [point["hour_key"] for point in manifest["points"]]
-
     return manifest, frames_by_hour
 
 
@@ -559,12 +548,12 @@ def main() -> None:
 
     manifest_path = output_dir / "current.json"
     with manifest_path.open("w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False)
+        json.dump(manifest, f, ensure_ascii=False, separators=(",", ":"))
 
     for hour_key, frame in frames_by_hour.items():
         frame_path = frames_dir / _frame_filename(hour_key)
         with frame_path.open("w", encoding="utf-8") as f:
-            json.dump(frame, f, ensure_ascii=False)
+            json.dump(frame, f, ensure_ascii=False, separators=(",", ":"))
 
     print(f"Wrote manifest: {manifest_path}")
     print(f"Wrote frames: {len(frames_by_hour)}")
