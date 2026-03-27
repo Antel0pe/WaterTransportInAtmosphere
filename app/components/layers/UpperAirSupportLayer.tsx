@@ -5,8 +5,11 @@ import * as THREE from "three";
 import * as BufferGeometryUtils from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { useEarthLayer } from "./EarthBase";
 import {
+  fetchMslContours,
   fetchUpperAirSupportFrame,
   fetchUpperAirSupportManifest,
+  type MslContoursFile,
+  type UpperAirSupportFeaturePoint,
   type UpperAirSupportFrame,
   type UpperAirSupportManifest,
   type UpperAirSupportPoint,
@@ -14,34 +17,14 @@ import {
 import { latLonToVec3 } from "../utils/EarthUtils";
 import { useControls } from "../../state/controlsStore";
 
+type StoryLayerKey = "pvDriver" | "tiltLink" | "liftChain";
+
+type StoryLayerState = Record<StoryLayerKey, boolean>;
+
 type UpperAirSupportStyleState = {
-  ascentThreshold: number;
   ascentOpacity: number;
-  ascentGamma: number;
-  divergenceThreshold: number;
-  arrowSpacing: number;
   arrowScale: number;
   arrowOpacity: number;
-};
-
-type UpperAirSupportSample = {
-  latitude: number;
-  longitude: number;
-  ascent_pa_s: number;
-  divergence_s1: number;
-  u_wind_ms: number;
-  v_wind_ms: number;
-  wind_speed_ms: number;
-};
-
-type FrameGrid = {
-  lats: number[];
-  lons: number[];
-  nLat: number;
-  nLon: number;
-  samples: Array<Array<UpperAirSupportSample | undefined>>;
-  positions: Float32Array;
-  indices: Uint16Array | Uint32Array;
 };
 
 type StaticBuildResult = {
@@ -49,19 +32,29 @@ type StaticBuildResult = {
   markerObjectsByHourKey: Map<string, THREE.Object3D[]>;
 };
 
+type StoryContourData = {
+  upper250: MslContoursFile | null;
+  lower925: MslContoursFile | null;
+};
+
+type FrameVisual = {
+  group: THREE.Group;
+  layers: Partial<Record<StoryLayerKey, THREE.Object3D>>;
+};
+
 type FrameDataEntry =
   | { status: "loading"; promise: Promise<void> }
   | { status: "ready"; frame: UpperAirSupportFrame }
   | { status: "missing" | "error" };
 
-type FrameTransition = {
-  fromFrames: THREE.Object3D[];
-  toFrames: THREE.Object3D[];
-  startMs: number;
-  durationMs: number;
-};
+type ContourDataEntry =
+  | { status: "loading"; promise: Promise<void> }
+  | { status: "ready"; data: StoryContourData }
+  | { status: "missing" | "error"; data: StoryContourData | null };
 
-const FRAME_TRANSITION_MS = 180;
+const STORY_LAYER_KEYS: StoryLayerKey[] = ["pvDriver", "tiltLink", "liftChain"];
+const CONTOUR_HALF_SPAN_LAT = 10;
+const CONTOUR_HALF_SPAN_LON = 16;
 
 function clamp01(x: number) {
   return THREE.MathUtils.clamp(x, 0, 1);
@@ -114,6 +107,70 @@ function splitPolyline(
   return pieces;
 }
 
+function wrappedLonDelta(a: number, b: number) {
+  let d = Math.abs(a - b);
+  if (d > 180) d = 360 - d;
+  return d;
+}
+
+function pointInLocalBox(
+  lat: number,
+  lon: number,
+  centerLat: number,
+  centerLon: number,
+  halfLat: number,
+  halfLon: number
+) {
+  return (
+    Math.abs(lat - centerLat) <= halfLat &&
+    wrappedLonDelta(lon, centerLon) <= halfLon
+  );
+}
+
+function clipPolylineToBox(
+  points: Array<[number, number]>,
+  centerLat: number,
+  centerLon: number,
+  halfLat: number,
+  halfLon: number
+) {
+  const pieces: Array<Array<[number, number]>> = [];
+  let current: Array<[number, number]> = [];
+
+  for (const point of points) {
+    const inside = pointInLocalBox(
+      point[1],
+      point[0],
+      centerLat,
+      centerLon,
+      halfLat,
+      halfLon
+    );
+    if (inside) {
+      current.push(point);
+      continue;
+    }
+    if (current.length >= 2) pieces.push(current);
+    current = [];
+  }
+
+  if (current.length >= 2) pieces.push(current);
+  return pieces;
+}
+
+function polylineDistanceToFeature(
+  points: Array<[number, number]>,
+  feature: UpperAirSupportFeaturePoint | null
+) {
+  if (!feature) return Number.POSITIVE_INFINITY;
+  let best = Number.POSITIVE_INFINITY;
+  for (const [lon, lat] of points) {
+    const d = Math.hypot(lat - feature.latitude, wrappedLonDelta(lon, feature.longitude));
+    if (d < best) best = d;
+  }
+  return best;
+}
+
 function disposeObjectTree(root: THREE.Object3D) {
   root.traverse((obj) => {
     const disposable = obj as THREE.Object3D & {
@@ -122,7 +179,6 @@ function disposeObjectTree(root: THREE.Object3D) {
     };
 
     disposable.geometry?.dispose?.();
-
     const material = disposable.material;
     if (Array.isArray(material)) {
       for (const m of material) m.dispose();
@@ -130,6 +186,29 @@ function disposeObjectTree(root: THREE.Object3D) {
       material?.dispose();
     }
   });
+}
+
+function setMaterialOpacity(
+  material: THREE.Material | THREE.Material[] | undefined,
+  opacity: number
+) {
+  if (!material) return;
+  const mats = Array.isArray(material) ? material : [material];
+  for (const mat of mats) {
+    const target = mat as THREE.Material & {
+      opacity?: number;
+      transparent?: boolean;
+      userData: Record<string, unknown>;
+    };
+    if (typeof target.opacity !== "number") continue;
+    const baseOpacity =
+      typeof target.userData.__baseOpacity === "number"
+        ? (target.userData.__baseOpacity as number)
+        : target.opacity;
+    target.userData.__baseOpacity = baseOpacity;
+    target.transparent = true;
+    target.opacity = baseOpacity * opacity;
+  }
 }
 
 function makeLine(
@@ -184,195 +263,14 @@ function makePathDots(
   return dots;
 }
 
-function makeVertexAlphaMesh(
-  positions: Float32Array,
-  indices: Uint16Array | Uint32Array,
-  colors: Float32Array,
-  alphas: Float32Array,
-  renderOrder: number
-) {
-  const geom = new THREE.BufferGeometry();
-  geom.setAttribute("position", new THREE.BufferAttribute(positions.slice(), 3));
-  geom.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-  geom.setAttribute("alpha", new THREE.BufferAttribute(alphas, 1));
-  geom.setIndex(new THREE.BufferAttribute(indices.slice(), 1));
-  geom.computeVertexNormals();
-
-  const mat = new THREE.ShaderMaterial({
-    transparent: true,
-    depthWrite: false,
-    depthTest: true,
-    side: THREE.DoubleSide,
-    polygonOffset: true,
-    polygonOffsetFactor: 1,
-    polygonOffsetUnits: 1,
-    uniforms: {
-      uAlphaMul: { value: 1.0 },
-    },
-    vertexShader: `
-      attribute vec3 color;
-      attribute float alpha;
-      varying vec3 vColor;
-      varying float vAlpha;
-
-      void main() {
-        vColor = color;
-        vAlpha = alpha;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      varying vec3 vColor;
-      varying float vAlpha;
-      uniform float uAlphaMul;
-
-      void main() {
-        gl_FragColor = vec4(vColor, vAlpha * uAlphaMul);
-      }
-    `,
-  });
-
-  const mesh = new THREE.Mesh(geom, mat);
-  mesh.frustumCulled = false;
-  mesh.renderOrder = renderOrder;
-  return mesh;
-}
-
-function buildFrameGrid(
-  frame: UpperAirSupportFrame,
-  radius: number,
-  lift: number
-): FrameGrid | null {
-  const lats = frame.grid_latitudes ?? [];
-  const lons = frame.grid_longitudes ?? [];
-  const nLat = lats.length;
-  const nLon = lons.length;
-  const count = nLat * nLon;
-  const cells = frame.cells ?? [];
-  if (nLat < 2 || nLon < 2 || count === 0) return null;
-  if (cells.length < count) return null;
-
-  const positions = new Float32Array(count * 3);
-  const samples: Array<Array<UpperAirSupportSample | undefined>> = Array.from(
-    { length: nLat },
-    () => Array<UpperAirSupportSample | undefined>(nLon)
-  );
-
-  let vertexIndex = 0;
-  for (let latIdx = 0; latIdx < nLat; latIdx++) {
-    for (let lonIdx = 0; lonIdx < nLon; lonIdx++) {
-      const lat = lats[latIdx];
-      const lon = lons[lonIdx];
-      const cell = cells[vertexIndex];
-      samples[latIdx][lonIdx] = cell
-        ? {
-            latitude: lat,
-            longitude: lon,
-            ascent_pa_s: cell[0],
-            divergence_s1: cell[1],
-            u_wind_ms: cell[2],
-            v_wind_ms: cell[3],
-            wind_speed_ms: Math.hypot(cell[2], cell[3]),
-          }
-        : undefined;
-
-      const v = latLonToVec3(lat, lon, radius + lift);
-      positions[vertexIndex * 3 + 0] = v.x;
-      positions[vertexIndex * 3 + 1] = v.y;
-      positions[vertexIndex * 3 + 2] = v.z;
-      vertexIndex += 1;
-    }
-  }
-
-  const triangleCount = (nLat - 1) * (nLon - 1) * 2;
-  const indices = new (count > 65535 ? Uint32Array : Uint16Array)(
-    triangleCount * 3
-  );
-  let triIndex = 0;
-  for (let latIdx = 0; latIdx < nLat - 1; latIdx++) {
-    for (let lonIdx = 0; lonIdx < nLon - 1; lonIdx++) {
-      const a = latIdx * nLon + lonIdx;
-      const b = a + 1;
-      const c = a + nLon;
-      const d = c + 1;
-
-      indices[triIndex++] = a;
-      indices[triIndex++] = c;
-      indices[triIndex++] = b;
-      indices[triIndex++] = b;
-      indices[triIndex++] = c;
-      indices[triIndex++] = d;
-    }
-  }
-
-  return { lats, lons, nLat, nLon, samples, positions, indices };
-}
-
-function applyAlphaMulToMaterial(
-  material: THREE.Material | THREE.Material[],
-  alphaMul: number
-) {
-  const materials = Array.isArray(material) ? material : [material];
-  for (const mat of materials) {
-    if (mat instanceof THREE.ShaderMaterial) {
-      const uniform = mat.uniforms?.uAlphaMul;
-      if (uniform) {
-        uniform.value = alphaMul;
-        continue;
-      }
-    }
-
-    const fadeable = mat as THREE.Material & {
-      opacity?: number;
-      transparent?: boolean;
-      userData: Record<string, unknown>;
-    };
-    if (typeof fadeable.opacity !== "number") continue;
-    const baseOpacity =
-      typeof fadeable.userData.__baseOpacity === "number"
-        ? (fadeable.userData.__baseOpacity as number)
-        : fadeable.opacity;
-    fadeable.userData.__baseOpacity = baseOpacity;
-    fadeable.transparent = true;
-    fadeable.opacity = baseOpacity * alphaMul;
-  }
-}
-
-function setObjectAlphaMul(obj: THREE.Object3D, alphaMul: number) {
-  obj.traverse((node) => {
-    const material = (node as THREE.Object3D & {
-      material?: THREE.Material | THREE.Material[];
-    }).material;
-    if (material) applyAlphaMulToMaterial(material, alphaMul);
-  });
-}
-
-function setObjectsAlphaMul(objects: THREE.Object3D[], alphaMul: number) {
-  for (const obj of objects) setObjectAlphaMul(obj, alphaMul);
-}
-
-function setObjectsVisible(objects: THREE.Object3D[], visible: boolean) {
-  for (const obj of objects) obj.visible = visible;
-}
-
-function sameObjects(a: THREE.Object3D[], b: THREE.Object3D[]) {
-  if (a === b) return true;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
-
 function makeArrowGeometry() {
   const shaftH = 0.7;
   const headH = 0.3;
-  const shaftR = 0.035;
-  const headR = 0.09;
+  const shaftR = 0.04;
+  const headR = 0.1;
 
   const shaft = new THREE.CylinderGeometry(shaftR, shaftR, shaftH, 10, 1, true);
   shaft.translate(0, shaftH * 0.5, 0);
-
   const head = new THREE.ConeGeometry(headR, headH, 14, 1, true);
   head.translate(0, shaftH + headH * 0.5, 0);
 
@@ -381,220 +279,316 @@ function makeArrowGeometry() {
   return merged;
 }
 
-function tangentEastNorth(
-  latDeg: number,
-  lonDeg: number,
-  radius: number,
-  lonOffsetDeg = 270,
-  latOffsetDeg = 0
-) {
+function tangentEastNorth(latDeg: number, lonDeg: number, radius: number) {
   const eps = 1e-3;
-  const p = latLonToVec3(latDeg, lonDeg, radius, lonOffsetDeg, latOffsetDeg);
-  const pLon = latLonToVec3(
-    latDeg,
-    lonDeg + eps,
-    radius,
-    lonOffsetDeg,
-    latOffsetDeg
-  );
-  const pLat = latLonToVec3(
-    latDeg + eps,
-    lonDeg,
-    radius,
-    lonOffsetDeg,
-    latOffsetDeg
-  );
+  const p = latLonToVec3(latDeg, lonDeg, radius);
+  const pLon = latLonToVec3(latDeg, lonDeg + eps, radius);
+  const pLat = latLonToVec3(latDeg + eps, lonDeg, radius);
 
   const dLon = pLon.sub(p);
   const dLat = pLat.sub(p);
   const n = p.clone().normalize();
-
   const east = dLon.sub(n.clone().multiplyScalar(dLon.dot(n))).normalize();
   const north = dLat.sub(n.clone().multiplyScalar(dLat.dot(n))).normalize();
-  return { p, east, north };
+  return { p, east, north, normal: n };
 }
 
-function makeAscentMesh(
-  frameGrid: FrameGrid,
-  manifest: UpperAirSupportManifest,
-  style: UpperAirSupportStyleState
-) {
-  const count = frameGrid.nLat * frameGrid.nLon;
-  const colors = new Float32Array(count * 3);
-  const alphas = new Float32Array(count);
-
-  const ascentRef = Math.max(
-    manifest.summary.ascent_p95_pa_s ?? manifest.summary.ascent_max_pa_s ?? 0,
-    1e-6
-  );
-  const threshold = clamp01(style.ascentThreshold) * ascentRef;
-  const denom = Math.max(ascentRef - threshold, 1e-6);
-
-  const warmEdge = new THREE.Color(0xffd8ca);
-  const warmCore = new THREE.Color(0xff5a52);
-
-  let vertexIndex = 0;
-  for (let latIdx = 0; latIdx < frameGrid.nLat; latIdx++) {
-    for (let lonIdx = 0; lonIdx < frameGrid.nLon; lonIdx++) {
-      const sample = frameGrid.samples[latIdx][lonIdx];
-      const ascent = sample?.ascent_pa_s ?? 0;
-      const t = clamp01((ascent - threshold) / denom);
-      const shaped = Math.pow(t, Math.max(style.ascentGamma, 0.01));
-      const color = warmEdge.clone().lerp(warmCore, Math.pow(t, 0.8));
-
-      colors[vertexIndex * 3 + 0] = color.r;
-      colors[vertexIndex * 3 + 1] = color.g;
-      colors[vertexIndex * 3 + 2] = color.b;
-      alphas[vertexIndex] = style.ascentOpacity * shaped;
-      vertexIndex += 1;
-    }
-  }
-
-  return makeVertexAlphaMesh(frameGrid.positions, frameGrid.indices, colors, alphas, 72);
-}
-
-function makeDivergenceArrowMesh(
-  frameGrid: FrameGrid,
-  frame: UpperAirSupportFrame,
-  manifest: UpperAirSupportManifest,
-  style: UpperAirSupportStyleState,
+function orientSurfaceGroup(
+  feature: UpperAirSupportFeaturePoint,
   radius: number,
   lift: number
 ) {
-  const ascentRef = Math.max(
-    manifest.summary.ascent_p95_pa_s ?? manifest.summary.ascent_max_pa_s ?? 0,
-    1e-6
+  const position = latLonToVec3(feature.latitude, feature.longitude, radius + lift);
+  const normal = position.clone().normalize();
+  const quaternion = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 0, 1),
+    normal
   );
-  const divergenceRef = Math.max(
-    manifest.summary.divergence_p95_s1 ??
-      manifest.summary.divergence_max_s1 ??
-      0,
-    1e-9
-  );
-  const windRef = Math.max(
-    manifest.summary.wind_p95_ms ?? manifest.summary.wind_max_ms ?? 0,
-    1e-6
-  );
+  return { position, normal, quaternion };
+}
 
-  const ascentThreshold = clamp01(style.ascentThreshold) * ascentRef;
-  const divergenceThreshold = clamp01(style.divergenceThreshold) * divergenceRef;
-  const spacing = Math.max(1, Math.round(style.arrowSpacing));
-
-  const candidates: Array<{
-    sample: UpperAirSupportSample;
-    latIdx: number;
-    lonIdx: number;
-    position: THREE.Vector3;
-  }> = [];
-  const divergenceCenter = new THREE.Vector3();
-  let divergenceWeightSum = 0;
-  for (let latIdx = 0; latIdx < frameGrid.nLat; latIdx += spacing) {
-    for (let lonIdx = 0; lonIdx < frameGrid.nLon; lonIdx += spacing) {
-      const sample = frameGrid.samples[latIdx][lonIdx];
-      if (!sample) continue;
-      if (sample.ascent_pa_s < ascentThreshold) continue;
-      if (sample.divergence_s1 < divergenceThreshold) continue;
-      if (sample.wind_speed_ms <= 0.0) continue;
-      const position = latLonToVec3(sample.latitude, sample.longitude, radius + lift);
-      candidates.push({ sample, latIdx, lonIdx, position });
-      divergenceCenter.add(position.clone().multiplyScalar(sample.divergence_s1));
-      divergenceWeightSum += sample.divergence_s1;
-    }
-  }
-
-  if (candidates.length === 0) return null;
-  if (divergenceWeightSum > 0) divergenceCenter.multiplyScalar(1 / divergenceWeightSum);
-
-  const geom = makeArrowGeometry();
+function makeFeatureMarker(
+  feature: UpperAirSupportFeaturePoint | null,
+  radius: number,
+  lift: number,
+  colorHex: number,
+  sizeScale: number,
+  renderOrder: number
+) {
+  if (!feature) return null;
+  const geom = new THREE.SphereGeometry(radius * sizeScale, 16, 16);
   const mat = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(0xffe7a8),
+    color: new THREE.Color(colorHex),
     transparent: true,
-    opacity: style.arrowOpacity,
+    opacity: 0.95,
     depthWrite: false,
     depthTest: true,
   });
-  const mesh = new THREE.InstancedMesh(geom, mat, candidates.length);
-  mesh.frustumCulled = false;
-  mesh.renderOrder = 86;
-  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  const marker = new THREE.Mesh(geom, mat);
+  marker.position.copy(
+    latLonToVec3(feature.latitude, feature.longitude, radius + lift)
+  );
+  marker.frustumCulled = false;
+  marker.renderOrder = renderOrder;
+  return marker;
+}
 
-  const up = new THREE.Vector3(0, 1, 0);
-  const tmpQuat = new THREE.Quaternion();
-  const tmpScale = new THREE.Vector3();
-  const tmpMat = new THREE.Matrix4();
-  const earthRadiusMeters = 6_371_000.0;
+function makeFeatureConnector(
+  start: UpperAirSupportFeaturePoint | null,
+  startLift: number,
+  end: UpperAirSupportFeaturePoint | null,
+  endLift: number,
+  radius: number,
+  colorHex: number,
+  opacity: number,
+  renderOrder: number
+) {
+  if (!start || !end) return null;
 
-  let idx = 0;
-  for (const candidate of candidates) {
-    const { sample, latIdx, lonIdx, position } = candidate;
-    const { p, east, north } = tangentEastNorth(
-      sample.latitude,
-      sample.longitude,
-      radius + lift
-    );
+  const positions = new Float32Array(6);
+  const a = latLonToVec3(start.latitude, start.longitude, radius + startLift);
+  const b = latLonToVec3(end.latitude, end.longitude, radius + endLift);
+  positions[0] = a.x;
+  positions[1] = a.y;
+  positions[2] = a.z;
+  positions[3] = b.x;
+  positions[4] = b.y;
+  positions[5] = b.z;
 
-    const normal = p.clone().normalize();
-    const outward = new THREE.Vector3();
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.LineBasicMaterial({
+    color: new THREE.Color(colorHex),
+    transparent: true,
+    opacity,
+    depthWrite: false,
+    depthTest: true,
+  });
+  const line = new THREE.Line(geom, mat);
+  line.frustumCulled = false;
+  line.renderOrder = renderOrder;
+  return line;
+}
 
-    const west = lonIdx > 0 ? frameGrid.samples[latIdx][lonIdx - 1] : undefined;
-    const eastSample =
-      lonIdx + 1 < frameGrid.nLon ? frameGrid.samples[latIdx][lonIdx + 1] : undefined;
-    if (west && eastSample) {
-      const dLonDeg = frameGrid.lons[lonIdx + 1] - frameGrid.lons[lonIdx - 1];
-      const dxMeters =
-        THREE.MathUtils.degToRad(Math.abs(dLonDeg)) *
-        earthRadiusMeters *
-        Math.max(Math.cos(THREE.MathUtils.degToRad(sample.latitude)), 1e-6);
-      if (dxMeters > 0) {
-        const dDx = (eastSample.divergence_s1 - west.divergence_s1) / dxMeters;
-        outward.add(east.clone().multiplyScalar(-dDx));
-      }
+function makePulseRing(
+  feature: UpperAirSupportFeaturePoint | null,
+  radius: number,
+  lift: number,
+  colorHex: number,
+  ringScale: number,
+  renderOrder: number,
+  phase = 0
+) {
+  if (!feature) return null;
+
+  const group = new THREE.Group();
+  const { position, quaternion } = orientSurfaceGroup(feature, radius, lift);
+  group.position.copy(position);
+  group.quaternion.copy(quaternion);
+  group.renderOrder = renderOrder;
+  group.frustumCulled = false;
+
+  const torus = new THREE.Mesh(
+    new THREE.TorusGeometry(radius * ringScale, radius * ringScale * 0.12, 12, 48),
+    new THREE.MeshBasicMaterial({
+      color: new THREE.Color(colorHex),
+      transparent: true,
+      opacity: 0.55,
+      depthWrite: false,
+      depthTest: true,
+    })
+  );
+  group.add(torus);
+  group.userData.__pulseScale = {
+    baseScale: 1,
+    amplitude: 0.18,
+    speed: 1.25,
+    phase,
+  };
+  group.userData.__pulseOpacity = {
+    min: 0.18,
+    max: 0.9,
+    speed: 1.25,
+    phase,
+  };
+  return group;
+}
+
+function makeSwirlMarker(
+  feature: UpperAirSupportFeaturePoint | null,
+  radius: number,
+  lift: number,
+  colorHex: number,
+  renderOrder: number,
+  phase = 0
+) {
+  if (!feature) return null;
+
+  const group = new THREE.Group();
+  const { position, quaternion } = orientSurfaceGroup(feature, radius, lift);
+  group.position.copy(position);
+  group.quaternion.copy(quaternion);
+  group.renderOrder = renderOrder;
+  group.frustumCulled = false;
+
+  const baseRadius = radius * 0.015;
+  for (let arm = 0; arm < 3; arm++) {
+    const points: THREE.Vector3[] = [];
+    for (let i = 0; i <= 28; i++) {
+      const t = i / 28;
+      const angle = 0.5 + t * 1.8 + arm * ((Math.PI * 2) / 3);
+      const r = baseRadius * (0.25 + 0.9 * t);
+      points.push(new THREE.Vector3(Math.cos(angle) * r, Math.sin(angle) * r, 0));
     }
-
-    const south = latIdx > 0 ? frameGrid.samples[latIdx - 1][lonIdx] : undefined;
-    const northSample =
-      latIdx + 1 < frameGrid.nLat ? frameGrid.samples[latIdx + 1][lonIdx] : undefined;
-    if (south && northSample) {
-      const dLatDeg = frameGrid.lats[latIdx + 1] - frameGrid.lats[latIdx - 1];
-      const dyMeters =
-        THREE.MathUtils.degToRad(Math.abs(dLatDeg)) * earthRadiusMeters;
-      if (dyMeters > 0) {
-        const dDy = (northSample.divergence_s1 - south.divergence_s1) / dyMeters;
-        outward.add(north.clone().multiplyScalar(-dDy));
-      }
-    }
-
-    if (outward.lengthSq() < 1e-12 && divergenceWeightSum > 0) {
-      outward.copy(position).sub(divergenceCenter);
-      outward.sub(normal.clone().multiplyScalar(outward.dot(normal)));
-    }
-
-    if (outward.lengthSq() < 1e-12) {
-      outward.copy(position).sub(latLonToVec3(frame.latitude, frame.longitude, radius + lift));
-      outward.sub(normal.clone().multiplyScalar(outward.dot(normal)));
-    }
-
-    if (outward.lengthSq() < 1e-12) continue;
-    outward.normalize();
-
-    tmpQuat.setFromUnitVectors(up, outward);
-
-    const divergenceNorm = clamp01(sample.divergence_s1 / divergenceRef);
-    const windNorm = clamp01(sample.wind_speed_ms / windRef);
-    const len =
-      style.arrowScale *
-      (0.78 + 0.22 * windNorm) *
-      (0.32 + 1.38 * Math.pow(divergenceNorm, 0.9));
-
-    tmpScale.set(1, len, 1);
-    tmpMat.compose(p, tmpQuat, tmpScale);
-    mesh.setMatrixAt(idx, tmpMat);
-    idx += 1;
+    const geom = new THREE.BufferGeometry().setFromPoints(points);
+    const mat = new THREE.LineBasicMaterial({
+      color: new THREE.Color(colorHex),
+      transparent: true,
+      opacity: 0.82,
+      depthWrite: false,
+      depthTest: true,
+    });
+    const line = new THREE.Line(geom, mat);
+    line.frustumCulled = false;
+    group.add(line);
   }
 
-  mesh.count = idx;
-  mesh.instanceMatrix.needsUpdate = true;
-  return mesh;
+  const center = new THREE.Mesh(
+    new THREE.SphereGeometry(radius * 0.0048, 14, 14),
+    new THREE.MeshBasicMaterial({
+      color: new THREE.Color(colorHex),
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      depthTest: true,
+    })
+  );
+  group.add(center);
+
+  group.userData.__spinZ = { speed: 0.55, phase };
+  group.userData.__pulseOpacity = {
+    min: 0.45,
+    max: 1,
+    speed: 1.1,
+    phase,
+  };
+  return group;
+}
+
+function makeFlowDotsConnector(
+  start: UpperAirSupportFeaturePoint | null,
+  startLift: number,
+  end: UpperAirSupportFeaturePoint | null,
+  endLift: number,
+  radius: number,
+  colorHex: number,
+  dotScale: number,
+  renderOrder: number,
+  phase = 0
+) {
+  if (!start || !end) return null;
+
+  const group = new THREE.Group();
+  group.renderOrder = renderOrder;
+  group.frustumCulled = false;
+
+  const startVec = latLonToVec3(start.latitude, start.longitude, radius + startLift);
+  const endVec = latLonToVec3(end.latitude, end.longitude, radius + endLift);
+  const geom = new THREE.SphereGeometry(radius * dotScale, 10, 10);
+  const count = 12;
+
+  for (let i = 0; i < count; i++) {
+    const t = i / (count - 1);
+    const mat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(colorHex),
+      transparent: true,
+      opacity: 0.15,
+      depthWrite: false,
+      depthTest: true,
+    });
+    const dot = new THREE.Mesh(geom.clone(), mat);
+    dot.position.copy(startVec.clone().lerp(endVec, t));
+    dot.userData.__flowT = t;
+    dot.frustumCulled = false;
+    group.add(dot);
+  }
+
+  group.userData.__flowDots = {
+    speed: 0.36,
+    width: 0.18,
+    phase,
+    minOpacity: 0.08,
+    maxOpacity: 1.0,
+  };
+  return group;
+}
+
+function makeRadialArrowGlyph(
+  feature: UpperAirSupportFeaturePoint | null,
+  radius: number,
+  lift: number,
+  colorHex: number,
+  inward: boolean,
+  style: UpperAirSupportStyleState,
+  renderOrder: number,
+  phase = 0
+) {
+  if (!feature) return null;
+
+  const group = new THREE.Group();
+  const arrowGeom = makeArrowGeometry();
+  const offset = 1.45;
+  const length = 0.6 + 0.45 * style.arrowScale;
+  const normalLift = 0.08;
+  const up = new THREE.Vector3(0, 1, 0);
+  const { p, east, north, normal } = tangentEastNorth(
+    feature.latitude,
+    feature.longitude,
+    radius + lift
+  );
+
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2;
+    const tangent = east
+      .clone()
+      .multiplyScalar(Math.cos(angle))
+      .add(north.clone().multiplyScalar(Math.sin(angle)))
+      .normalize();
+    const dir = inward ? tangent.clone().multiplyScalar(-1) : tangent.clone();
+    const pos = p
+      .clone()
+      .add(tangent.clone().multiplyScalar(offset))
+      .add(normal.clone().multiplyScalar(normalLift));
+
+    const mesh = new THREE.Mesh(
+      arrowGeom.clone(),
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(colorHex),
+        transparent: true,
+        opacity: 0.55 * style.arrowOpacity,
+        depthWrite: false,
+        depthTest: true,
+      })
+    );
+    mesh.position.copy(pos);
+    mesh.quaternion.setFromUnitVectors(up, dir);
+    mesh.scale.set(0.42, length, 0.42);
+    mesh.renderOrder = renderOrder;
+    mesh.frustumCulled = false;
+    group.add(mesh);
+  }
+
+  group.userData.__pulseOpacity = {
+    min: 0.45,
+    max: 1,
+    speed: 1.15,
+    phase,
+  };
+  return group;
+}
+
+function addIfPresent(group: THREE.Group, object: THREE.Object3D | null) {
+  if (object) group.add(object);
 }
 
 function buildStaticContext(
@@ -603,12 +597,12 @@ function buildStaticContext(
 ): StaticBuildResult {
   const points = [...manifest.points].sort((a, b) => a.step_hour - b.step_hour);
   const group = new THREE.Group();
-  group.name = "upper-air-support-static";
+  group.name = "upper-air-story-static";
   group.frustumCulled = false;
   group.renderOrder = 80;
 
-  const pathLift = radius * 0.00315;
-  const markerLift = radius * 0.0042;
+  const pathLift = radius * 0.0031;
+  const markerLift = radius * 0.0044;
   const markerObjectsByHourKey = new Map<string, THREE.Object3D[]>();
 
   const pathPieces = splitPolyline(
@@ -629,7 +623,7 @@ function buildStaticContext(
   const dots6h = points.filter((p) => p.step_hour % 6 === 0);
   group.add(makePathDots(dots6h, radius, pathLift + radius * 0.0002, 0xf7f3ec, 1.7));
 
-  const markerGeom = new THREE.SphereGeometry(radius * 0.0062, 14, 14);
+  const markerGeom = new THREE.SphereGeometry(radius * 0.0066, 14, 14);
   const markerMat = new THREE.MeshBasicMaterial({
     color: new THREE.Color(0x6bd7ff),
     transparent: true,
@@ -653,35 +647,382 @@ function buildStaticContext(
   return { group, markerObjectsByHourKey };
 }
 
-function buildFrameVisual(
+function buildLocalContourContext(
+  contourFile: MslContoursFile | null,
+  centerLat: number,
+  centerLon: number,
+  radius: number,
+  lift: number,
+  baseColorHex: number,
+  highlightColorHex: number,
+  targetFeature: UpperAirSupportFeaturePoint | null,
+  levelWindow: number,
+  renderOrder: number
+) {
+  if (!contourFile) return null;
+
+  const group = new THREE.Group();
+  group.frustumCulled = false;
+  group.renderOrder = renderOrder;
+
+  let bestPiece: Array<[number, number]> | null = null;
+  let bestDist = Number.POSITIVE_INFINITY;
+  const targetValue = targetFeature?.value ?? Number.NaN;
+
+  const baseMat = new THREE.LineBasicMaterial({
+    color: new THREE.Color(baseColorHex),
+    transparent: true,
+    opacity: 0.26,
+    depthWrite: false,
+    depthTest: true,
+  });
+
+  for (const [levelKey, lines] of Object.entries(contourFile.levels ?? {})) {
+    const level = Number(levelKey);
+    if (
+      Number.isFinite(targetValue) &&
+      Number.isFinite(level) &&
+      Math.abs(level - targetValue) > levelWindow
+    ) {
+      continue;
+    }
+
+    for (const line of lines ?? []) {
+      const pieces = clipPolylineToBox(
+        line as Array<[number, number]>,
+        centerLat,
+        centerLon,
+        CONTOUR_HALF_SPAN_LAT,
+        CONTOUR_HALF_SPAN_LON
+      );
+      for (const piece of pieces) {
+        const splitPieces = splitPolyline(piece, 3.5);
+        for (const splitPiece of splitPieces) {
+          if (splitPiece.length < 2) continue;
+          group.add(makeLine(splitPiece, radius, lift, baseMat.clone()));
+          const dist = polylineDistanceToFeature(splitPiece, targetFeature);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestPiece = splitPiece;
+          }
+        }
+      }
+    }
+  }
+
+  if (bestPiece) {
+    const highlightMat = new THREE.LineBasicMaterial({
+      color: new THREE.Color(highlightColorHex),
+      transparent: true,
+      opacity: 0.92,
+      depthWrite: false,
+      depthTest: true,
+    });
+    const highlight = makeLine(bestPiece, radius, lift + 0.05, highlightMat);
+    highlight.renderOrder = renderOrder + 1;
+    highlight.userData.__pulseOpacity = {
+      min: 0.4,
+      max: 1,
+      speed: 1.1,
+      phase: 0.2,
+    };
+    group.add(highlight);
+  }
+
+  return group;
+}
+
+function buildPvDriverLayer(
   frame: UpperAirSupportFrame,
+  contours: StoryContourData | null,
   manifest: UpperAirSupportManifest,
   style: UpperAirSupportStyleState,
   radius: number
 ) {
   const group = new THREE.Group();
-  group.name = `upper-air-support-frame-${frame.hour_key}`;
+  group.name = "upper-air-pv-driver";
+
+  addIfPresent(
+    group,
+    buildLocalContourContext(
+      contours?.upper250 ?? null,
+      frame.latitude,
+      frame.longitude,
+      radius,
+      radius * 0.0048,
+      0xa17d4e,
+      0xffe1a6,
+      frame.features.trough250_min,
+      260,
+      72
+    )
+  );
+
+  const pvRef = Math.max(
+    manifest.summary.pv_p95_pvu ?? manifest.summary.pv_max_pvu ?? 1,
+    1
+  );
+  const pvScale = 0.011 + 0.007 * clamp01((frame.features.pv250_peak?.value ?? 0) / pvRef);
+  addIfPresent(
+    group,
+    makePulseRing(
+      frame.features.pv250_peak,
+      radius,
+      radius * 0.0056,
+      0xff58f4,
+      pvScale,
+      92,
+      0.1
+    )
+  );
+  addIfPresent(
+    group,
+    makeSwirlMarker(
+      frame.features.pv250_peak,
+      radius,
+      radius * 0.0057,
+      0xff7dff,
+      93,
+      0.3
+    )
+  );
+  addIfPresent(
+    group,
+    makePulseRing(
+      frame.features.ascent500_peak,
+      radius,
+      radius * 0.0040,
+      0xff9b5b,
+      0.009,
+      91,
+      0.5
+    )
+  );
+  addIfPresent(
+    group,
+    makeFlowDotsConnector(
+      frame.features.pv250_peak,
+      radius * 0.0056,
+      frame.features.ascent500_peak,
+      radius * 0.0040,
+      radius,
+      0xffd8a3,
+      0.0018,
+      91,
+      0.15
+    )
+  );
+  addIfPresent(
+    group,
+    makeFeatureMarker(frame.features.pv250_peak, radius, radius * 0.0056, 0xff6fff, 0.0048, 94)
+  );
+
+  return group;
+}
+
+function buildTiltLinkLayer(
+  frame: UpperAirSupportFrame,
+  contours: StoryContourData | null,
+  radius: number
+) {
+  const group = new THREE.Group();
+  group.name = "upper-air-tilt-link";
+
+  addIfPresent(
+    group,
+    buildLocalContourContext(
+      contours?.upper250 ?? null,
+      frame.latitude,
+      frame.longitude,
+      radius,
+      radius * 0.0047,
+      0xd5a96d,
+      0xffe2ad,
+      frame.features.trough250_min,
+      260,
+      72
+    )
+  );
+  addIfPresent(
+    group,
+    buildLocalContourContext(
+      contours?.lower925 ?? null,
+      frame.latitude,
+      frame.longitude,
+      radius,
+      radius * 0.0030,
+      0x67d8ff,
+      0xcff7ff,
+      frame.features.low925_min,
+      120,
+      70
+    )
+  );
+  addIfPresent(
+    group,
+    makeFeatureConnector(
+      frame.features.trough250_min,
+      radius * 0.0047,
+      frame.features.low925_min,
+      radius * 0.0030,
+      radius,
+      0xeaf4ff,
+      0.8,
+      91
+    )
+  );
+  addIfPresent(
+    group,
+    makeFeatureMarker(frame.features.trough250_min, radius, radius * 0.0049, 0xffd895, 0.0048, 93)
+  );
+  addIfPresent(
+    group,
+    makeFeatureMarker(frame.features.low925_min, radius, radius * 0.0031, 0x7af0ff, 0.0052, 93)
+  );
+
+  return group;
+}
+
+function buildLiftChainLayer(
+  frame: UpperAirSupportFrame,
+  style: UpperAirSupportStyleState,
+  radius: number
+) {
+  const group = new THREE.Group();
+  group.name = "upper-air-lift-chain";
+
+  addIfPresent(
+    group,
+    makeRadialArrowGlyph(
+      frame.features.divergence250_peak,
+      radius,
+      radius * 0.0053,
+      0xffd477,
+      false,
+      style,
+      90,
+      0.1
+    )
+  );
+  addIfPresent(
+    group,
+    makeRadialArrowGlyph(
+      frame.features.convergence925_peak,
+      radius,
+      radius * 0.0030,
+      0x66f0da,
+      true,
+      style,
+      89,
+      0.55
+    )
+  );
+  addIfPresent(
+    group,
+    makePulseRing(
+      frame.features.ascent500_peak,
+      radius,
+      radius * 0.0041,
+      0xff8d52,
+      0.0105,
+      91,
+      0.3
+    )
+  );
+  addIfPresent(
+    group,
+    makeFeatureConnector(
+      frame.features.convergence925_peak,
+      radius * 0.0030,
+      frame.features.ascent500_peak,
+      radius * 0.0041,
+      radius,
+      0xffd4bd,
+      0.35,
+      88
+    )
+  );
+  addIfPresent(
+    group,
+    makeFeatureConnector(
+      frame.features.ascent500_peak,
+      radius * 0.0041,
+      frame.features.divergence250_peak,
+      radius * 0.0053,
+      radius,
+      0xffe6b0,
+      0.35,
+      88
+    )
+  );
+  addIfPresent(
+    group,
+    makeFlowDotsConnector(
+      frame.features.convergence925_peak,
+      radius * 0.0030,
+      frame.features.ascent500_peak,
+      radius * 0.0041,
+      radius,
+      0xffb28d,
+      0.00175,
+      92,
+      0.0
+    )
+  );
+  addIfPresent(
+    group,
+    makeFlowDotsConnector(
+      frame.features.ascent500_peak,
+      radius * 0.0041,
+      frame.features.divergence250_peak,
+      radius * 0.0053,
+      radius,
+      0xffdf9b,
+      0.00175,
+      92,
+      0.48
+    )
+  );
+
+  return group;
+}
+
+function buildFrameVisual(
+  frame: UpperAirSupportFrame,
+  contours: StoryContourData | null,
+  manifest: UpperAirSupportManifest,
+  style: UpperAirSupportStyleState,
+  radius: number
+): FrameVisual {
+  const group = new THREE.Group();
+  group.name = `upper-air-story-frame-${frame.hour_key}`;
   group.frustumCulled = false;
   group.visible = false;
   group.renderOrder = 78;
 
-  const fieldLift = radius * 0.00295;
-  const arrowLift = radius * 0.0043;
-  const frameGrid = buildFrameGrid(frame, radius, fieldLift);
-  if (!frameGrid) return group;
+  const pvDriver = buildPvDriverLayer(frame, contours, manifest, style, radius);
+  const tiltLink = buildTiltLinkLayer(frame, contours, radius);
+  const liftChain = buildLiftChainLayer(frame, style, radius);
 
-  group.add(makeAscentMesh(frameGrid, manifest, style));
-  const arrows = makeDivergenceArrowMesh(
-    frameGrid,
-    frame,
-    manifest,
-    style,
-    radius,
-    arrowLift
-  );
-  if (arrows) group.add(arrows);
+  group.add(pvDriver, tiltLink, liftChain);
+  return {
+    group,
+    layers: {
+      pvDriver,
+      tiltLink,
+      liftChain,
+    },
+  };
+}
 
-  return group;
+function applyStoryLayerVisibility(
+  visual: FrameVisual,
+  storyLayers: StoryLayerState
+) {
+  for (const key of STORY_LAYER_KEYS) {
+    const layer = visual.layers[key];
+    if (layer) layer.visible = storyLayers[key];
+  }
 }
 
 function setActiveObjects(
@@ -702,22 +1043,105 @@ function setActiveObjects(
   activeObjectsRef.current = next;
 }
 
+function animateStoryObject(root: THREE.Object3D, timeSec: number) {
+  root.traverse((obj) => {
+    const spin = obj.userData.__spinZ as
+      | { speed: number; phase?: number }
+      | undefined;
+    if (spin) {
+      obj.rotation.z = (spin.phase ?? 0) + timeSec * spin.speed;
+    }
+
+    const pulseScale = obj.userData.__pulseScale as
+      | { baseScale: number; amplitude: number; speed: number; phase?: number }
+      | undefined;
+    if (pulseScale) {
+      const wave =
+        0.5 + 0.5 * Math.sin(timeSec * pulseScale.speed + (pulseScale.phase ?? 0));
+      const scale = pulseScale.baseScale * (1 + pulseScale.amplitude * wave);
+      obj.scale.setScalar(scale);
+    }
+
+    const pulseOpacity = obj.userData.__pulseOpacity as
+      | { min: number; max: number; speed: number; phase?: number }
+      | undefined;
+    if (pulseOpacity) {
+      const wave =
+        0.5 + 0.5 * Math.sin(timeSec * pulseOpacity.speed + (pulseOpacity.phase ?? 0));
+      const opacity = THREE.MathUtils.lerp(pulseOpacity.min, pulseOpacity.max, wave);
+      setMaterialOpacity(
+        (obj as THREE.Object3D & { material?: THREE.Material | THREE.Material[] }).material,
+        opacity
+      );
+      for (const child of obj.children) {
+        setMaterialOpacity(
+          (child as THREE.Object3D & { material?: THREE.Material | THREE.Material[] }).material,
+          opacity
+        );
+      }
+    }
+
+    const flowDots = obj.userData.__flowDots as
+      | {
+          speed: number;
+          width: number;
+          phase?: number;
+          minOpacity: number;
+          maxOpacity: number;
+        }
+      | undefined;
+    if (flowDots) {
+      const head = ((timeSec * flowDots.speed + (flowDots.phase ?? 0)) % 1 + 1) % 1;
+      for (const child of obj.children) {
+        const t = Number((child as THREE.Object3D & { userData: Record<string, unknown> }).userData.__flowT);
+        if (!Number.isFinite(t)) continue;
+        const wrapped = Math.min(Math.abs(t - head), 1 - Math.abs(t - head));
+        const strength = clamp01(1 - wrapped / Math.max(flowDots.width, 1e-6));
+        const shaped = strength * strength;
+        const opacity = THREE.MathUtils.lerp(flowDots.minOpacity, flowDots.maxOpacity, shaped);
+        setMaterialOpacity(
+          (child as THREE.Object3D & { material?: THREE.Material | THREE.Material[] }).material,
+          opacity
+        );
+        const scale = 0.75 + 0.85 * shaped;
+        child.scale.setScalar(scale);
+      }
+    }
+  });
+}
+
 export default function UpperAirSupportLayer() {
-  const enabled = useControls((s) => s.layers.upperAirSupport);
+  const upperAirPvDriver = useControls((s) => s.layers.upperAirPvDriver);
+  const upperAirTiltLink = useControls((s) => s.layers.upperAirTiltLink);
+  const upperAirLiftChain = useControls((s) => s.layers.upperAirLiftChain);
   const upperAirSupport = useControls((s) => s.upperAirSupport);
   const {
     engineReady,
     sceneRef,
-    globeRef,
     timestamp,
     signalReady,
     registerFramePass,
     unregisterFramePass,
   } = useEarthLayer("upper-air-support");
 
+  const storyLayers = useMemo<StoryLayerState>(
+    () => ({
+      pvDriver: upperAirPvDriver,
+      tiltLink: upperAirTiltLink,
+      liftChain: upperAirLiftChain,
+    }),
+    [upperAirPvDriver, upperAirTiltLink, upperAirLiftChain]
+  );
+  const enabled = upperAirPvDriver || upperAirTiltLink || upperAirLiftChain;
+  const needsContourContext = upperAirPvDriver || upperAirTiltLink;
+
   const style = useMemo<UpperAirSupportStyleState>(
-    () => ({ ...upperAirSupport }),
-    [upperAirSupport]
+    () => ({
+      ascentOpacity: upperAirSupport.ascentOpacity,
+      arrowScale: upperAirSupport.arrowScale,
+      arrowOpacity: upperAirSupport.arrowOpacity,
+    }),
+    [upperAirSupport.ascentOpacity, upperAirSupport.arrowScale, upperAirSupport.arrowOpacity]
   );
 
   const [manifest, setManifest] = useState<UpperAirSupportManifest | null>(null);
@@ -730,12 +1154,12 @@ export default function UpperAirSupportLayer() {
   const manifestLoadingRef = useRef(false);
 
   const markerObjectsByHourKeyRef = useRef<Map<string, THREE.Object3D[]>>(new Map());
-  const frameDataCacheRef = useRef<Map<string, FrameDataEntry>>(new Map());
-  const frameObjectsByHourKeyRef = useRef<Map<string, THREE.Object3D[]>>(new Map());
-  const frameTransitionRef = useRef<FrameTransition | null>(null);
-
   const activeMarkerObjectsRef = useRef<THREE.Object3D[]>([]);
-  const activeFrameObjectsRef = useRef<THREE.Object3D[]>([]);
+
+  const frameDataCacheRef = useRef<Map<string, FrameDataEntry>>(new Map());
+  const contourDataCacheRef = useRef<Map<string, ContourDataEntry>>(new Map());
+  const frameVisualsByHourKeyRef = useRef<Map<string, FrameVisual>>(new Map());
+  const activeFrameKeyRef = useRef<string | null>(null);
 
   const orderedHourKeys = useMemo(
     () =>
@@ -752,64 +1176,36 @@ export default function UpperAirSupportLayer() {
     return new Map(manifest.points.map((point) => [point.hour_key, point]));
   }, [manifest]);
 
-  const clearFrameTransition = useCallback((showTarget: boolean) => {
-    const transition = frameTransitionRef.current;
-    if (!transition) return;
-
-    setObjectsAlphaMul(transition.fromFrames, 1);
-    setObjectsAlphaMul(transition.toFrames, 1);
-    setObjectsVisible(transition.fromFrames, false);
-
-    if (showTarget) {
-      setObjectsVisible(transition.toFrames, true);
-      activeFrameObjectsRef.current = transition.toFrames;
-    } else {
-      setObjectsVisible(transition.toFrames, false);
-      activeFrameObjectsRef.current = [];
-    }
-
-    frameTransitionRef.current = null;
+  const hideActiveFrame = useCallback(() => {
+    const activeKey = activeFrameKeyRef.current;
+    if (!activeKey) return;
+    const activeVisual = frameVisualsByHourKeyRef.current.get(activeKey);
+    if (activeVisual) activeVisual.group.visible = false;
+    activeFrameKeyRef.current = null;
   }, []);
 
-  const hideActiveFrames = useCallback(() => {
-    clearFrameTransition(false);
-    setObjectsAlphaMul(activeFrameObjectsRef.current, 1);
-    setObjectsVisible(activeFrameObjectsRef.current, false);
-    activeFrameObjectsRef.current = [];
-  }, [clearFrameTransition]);
+  const clearFrameVisuals = useCallback(() => {
+    hideActiveFrame();
+    for (const visual of frameVisualsByHourKeyRef.current.values()) {
+      disposeObjectTree(visual.group);
+      visual.group.removeFromParent();
+    }
+    frameVisualsByHourKeyRef.current.clear();
+    setCacheVersion((v) => v + 1);
+  }, [hideActiveFrame]);
 
-  const transitionToFrameObjects = useCallback(
-    (nextFrames: THREE.Object3D[]) => {
-      clearFrameTransition(true);
-
-      const prevFrames = activeFrameObjectsRef.current;
-      if (sameObjects(prevFrames, nextFrames)) {
-        setObjectsVisible(nextFrames, true);
-        setObjectsAlphaMul(nextFrames, 1);
-        activeFrameObjectsRef.current = nextFrames;
-        return;
+  const showFrame = useCallback(
+    (hourKey: string, visual: FrameVisual) => {
+      const prevKey = activeFrameKeyRef.current;
+      if (prevKey && prevKey !== hourKey) {
+        const prevVisual = frameVisualsByHourKeyRef.current.get(prevKey);
+        if (prevVisual) prevVisual.group.visible = false;
       }
-
-      if (prevFrames.length === 0) {
-        setObjectsVisible(nextFrames, true);
-        setObjectsAlphaMul(nextFrames, 1);
-        activeFrameObjectsRef.current = nextFrames;
-        return;
-      }
-
-      setObjectsVisible(prevFrames, true);
-      setObjectsAlphaMul(prevFrames, 1);
-      setObjectsVisible(nextFrames, true);
-      setObjectsAlphaMul(nextFrames, 0);
-      activeFrameObjectsRef.current = nextFrames;
-      frameTransitionRef.current = {
-        fromFrames: prevFrames,
-        toFrames: nextFrames,
-        startMs: performance.now(),
-        durationMs: FRAME_TRANSITION_MS,
-      };
+      applyStoryLayerVisibility(visual, storyLayers);
+      visual.group.visible = true;
+      activeFrameKeyRef.current = hourKey;
     },
-    [clearFrameTransition]
+    [storyLayers]
   );
 
   useEffect(() => {
@@ -817,43 +1213,10 @@ export default function UpperAirSupportLayer() {
   }, [timestamp]);
 
   useEffect(() => {
-    if (!engineReady) return;
-
-    const passKey = "upper-air-support-transition";
-    registerFramePass(passKey, (tick) => {
-      const transition = frameTransitionRef.current;
-      if (!transition) return;
-
-      const alpha = clamp01(
-        (tick.t - transition.startMs) / Math.max(transition.durationMs, 1)
-      );
-      setObjectsVisible(transition.fromFrames, true);
-      setObjectsVisible(transition.toFrames, true);
-      setObjectsAlphaMul(transition.fromFrames, 1 - alpha);
-      setObjectsAlphaMul(transition.toFrames, alpha);
-
-      if (alpha >= 1) {
-        setObjectsAlphaMul(transition.fromFrames, 1);
-        setObjectsAlphaMul(transition.toFrames, 1);
-        setObjectsVisible(transition.fromFrames, false);
-        setObjectsVisible(transition.toFrames, true);
-        activeFrameObjectsRef.current = transition.toFrames;
-        frameTransitionRef.current = null;
-      }
-    });
-
-    return () => {
-      unregisterFramePass(passKey);
-      clearFrameTransition(true);
-    };
-  }, [engineReady, registerFramePass, unregisterFramePass, clearFrameTransition]);
-
-  useEffect(() => {
-    if (!engineReady) return;
-    if (!sceneRef.current || !globeRef.current) return;
+    if (!engineReady || !sceneRef.current) return;
 
     const root = new THREE.Group();
-    root.name = "upper-air-support-root";
+    root.name = "upper-air-story-root";
     root.renderOrder = 78;
     root.visible = false;
     sceneRef.current.add(root);
@@ -866,16 +1229,15 @@ export default function UpperAirSupportLayer() {
         markerObjectsByHourKeyRef.current,
         activeMarkerObjectsRef
       );
-      hideActiveFrames();
+      hideActiveFrame();
 
-      for (const objects of frameObjectsByHourKeyRef.current.values()) {
-        for (const obj of objects) {
-          disposeObjectTree(obj);
-          obj.removeFromParent();
-        }
+      for (const visual of frameVisualsByHourKeyRef.current.values()) {
+        disposeObjectTree(visual.group);
+        visual.group.removeFromParent();
       }
-      frameObjectsByHourKeyRef.current.clear();
+      frameVisualsByHourKeyRef.current.clear();
       frameDataCacheRef.current.clear();
+      contourDataCacheRef.current.clear();
       markerObjectsByHourKeyRef.current.clear();
 
       const staticGroup = staticGroupRef.current;
@@ -889,7 +1251,24 @@ export default function UpperAirSupportLayer() {
       rootRef.current = null;
       manifestLoadingRef.current = false;
     };
-  }, [engineReady, sceneRef, globeRef, hideActiveFrames]);
+  }, [engineReady, sceneRef, hideActiveFrame]);
+
+  useEffect(() => {
+    if (!engineReady) return;
+
+    const passKey = "upper-air-story-animate";
+    registerFramePass(passKey, (tick) => {
+      const activeKey = activeFrameKeyRef.current;
+      if (!enabled || !activeKey) return;
+      const visual = frameVisualsByHourKeyRef.current.get(activeKey);
+      if (!visual) return;
+      animateStoryObject(visual.group, tick.t / 1000);
+    });
+
+    return () => {
+      unregisterFramePass(passKey);
+    };
+  }, [engineReady, enabled, registerFramePass, unregisterFramePass]);
 
   useEffect(() => {
     if (!engineReady || !enabled || manifest || manifestFailed) return;
@@ -947,18 +1326,16 @@ export default function UpperAirSupportLayer() {
   }, [engineReady, manifest]);
 
   useEffect(() => {
-    if (!manifest) return;
+    clearFrameVisuals();
+  }, [style, needsContourContext, clearFrameVisuals]);
 
-    hideActiveFrames();
-    for (const objects of frameObjectsByHourKeyRef.current.values()) {
-      for (const obj of objects) {
-        disposeObjectTree(obj);
-        obj.removeFromParent();
-      }
+  useEffect(() => {
+    for (const visual of frameVisualsByHourKeyRef.current.values()) {
+      applyStoryLayerVisibility(visual, storyLayers);
     }
-    frameObjectsByHourKeyRef.current.clear();
-    setCacheVersion((v) => v + 1);
-  }, [manifest, style, hideActiveFrames]);
+    const root = rootRef.current;
+    if (root) root.visible = enabled;
+  }, [storyLayers, enabled]);
 
   useEffect(() => {
     if (!engineReady) return;
@@ -974,13 +1351,13 @@ export default function UpperAirSupportLayer() {
     );
 
     if (!enabled) {
-      hideActiveFrames();
+      hideActiveFrame();
       signalReady(timestamp);
       return;
     }
 
     if (manifestFailed) {
-      hideActiveFrames();
+      hideActiveFrame();
       signalReady(timestamp);
       return;
     }
@@ -990,25 +1367,19 @@ export default function UpperAirSupportLayer() {
     const currentHourKey = toHourlyKey(timestamp);
     const currentIndex = orderedHourKeys.indexOf(currentHourKey);
     if (currentIndex === -1) {
-      hideActiveFrames();
+      hideActiveFrame();
       signalReady(timestamp);
       return;
     }
 
-    const desiredHourKeys = orderedHourKeys.slice(currentIndex, currentIndex + 3);
+    const startIndex = Math.max(0, currentIndex - 1);
+    const endIndex = Math.min(orderedHourKeys.length, currentIndex + 2);
+    const desiredHourKeys = orderedHourKeys.slice(startIndex, endIndex);
     const desiredSet = new Set(desiredHourKeys);
 
     for (const desiredHourKey of desiredHourKeys) {
       const existing = frameDataCacheRef.current.get(desiredHourKey);
-      if (existing?.status === "ready") {
-        if (!frameObjectsByHourKeyRef.current.has(desiredHourKey)) {
-          const group = buildFrameVisual(existing.frame, manifest, style, 100);
-          root.add(group);
-          frameObjectsByHourKeyRef.current.set(desiredHourKey, [group]);
-        }
-        continue;
-      }
-      if (existing?.status === "loading") continue;
+      if (existing?.status === "ready" || existing?.status === "loading") continue;
       if (!pointsByHourKey.has(desiredHourKey)) {
         frameDataCacheRef.current.set(desiredHourKey, { status: "missing" });
         continue;
@@ -1034,50 +1405,83 @@ export default function UpperAirSupportLayer() {
       frameDataCacheRef.current.set(desiredHourKey, { status: "loading", promise });
     }
 
-    const protectedFrameObjects = new Set(
-      [
-        ...activeFrameObjectsRef.current,
-        ...(frameTransitionRef.current
-          ? [
-              ...frameTransitionRef.current.fromFrames,
-              ...frameTransitionRef.current.toFrames,
-            ]
-          : []),
-      ]
-    );
+    if (needsContourContext) {
+      for (const desiredHourKey of desiredHourKeys) {
+        const existing = contourDataCacheRef.current.get(desiredHourKey);
+        if (existing?.status === "ready" || existing?.status === "loading") continue;
 
-    for (const [hourKey, objects] of frameObjectsByHourKeyRef.current.entries()) {
-      if (desiredSet.has(hourKey)) continue;
-      if (objects.some((obj) => protectedFrameObjects.has(obj))) continue;
-      for (const obj of objects) {
-        disposeObjectTree(obj);
-        obj.removeFromParent();
+        const promise = (async () => {
+          try {
+            const [upper250, lower925] = await Promise.all([
+              fetchMslContours(desiredHourKey, "250"),
+              fetchMslContours(desiredHourKey, "925"),
+            ]);
+            contourDataCacheRef.current.set(desiredHourKey, {
+              status: "ready",
+              data: { upper250, lower925 },
+            });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (!message.includes("(404")) {
+              console.error(`Failed to load contour context ${desiredHourKey}`, err);
+            }
+            contourDataCacheRef.current.set(desiredHourKey, {
+              status: message.includes("(404") ? "missing" : "error",
+              data: null,
+            });
+          } finally {
+            setCacheVersion((v) => v + 1);
+          }
+        })();
+
+        contourDataCacheRef.current.set(desiredHourKey, { status: "loading", promise });
       }
-      frameObjectsByHourKeyRef.current.delete(hourKey);
+    }
+
+    const protectedKeys = new Set<string>();
+    if (activeFrameKeyRef.current) protectedKeys.add(activeFrameKeyRef.current);
+
+    for (const [hourKey, visual] of frameVisualsByHourKeyRef.current.entries()) {
+      if (desiredSet.has(hourKey) || protectedKeys.has(hourKey)) continue;
+      disposeObjectTree(visual.group);
+      visual.group.removeFromParent();
+      frameVisualsByHourKeyRef.current.delete(hourKey);
     }
 
     for (const [hourKey, entry] of frameDataCacheRef.current.entries()) {
-      if (desiredSet.has(hourKey)) continue;
+      if (desiredSet.has(hourKey) || protectedKeys.has(hourKey)) continue;
       if (entry.status === "loading") continue;
       frameDataCacheRef.current.delete(hourKey);
     }
 
+    for (const [hourKey, entry] of contourDataCacheRef.current.entries()) {
+      if (desiredSet.has(hourKey) || protectedKeys.has(hourKey)) continue;
+      if (entry.status === "loading") continue;
+      contourDataCacheRef.current.delete(hourKey);
+    }
+
     const currentEntry = frameDataCacheRef.current.get(currentHourKey);
     if (currentEntry?.status === "ready") {
-      if (!frameObjectsByHourKeyRef.current.has(currentHourKey)) {
-        const group = buildFrameVisual(currentEntry.frame, manifest, style, 100);
-        root.add(group);
-        frameObjectsByHourKeyRef.current.set(currentHourKey, [group]);
+      const contourEntry = contourDataCacheRef.current.get(currentHourKey);
+      if (needsContourContext && contourEntry?.status === "loading") {
+        return;
       }
-      transitionToFrameObjects(
-        frameObjectsByHourKeyRef.current.get(currentHourKey) ?? []
-      );
+
+      let visual = frameVisualsByHourKeyRef.current.get(currentHourKey);
+      if (!visual) {
+        const contourData =
+          contourEntry?.status === "ready" ? contourEntry.data : null;
+        visual = buildFrameVisual(currentEntry.frame, contourData, manifest, style, 100);
+        frameVisualsByHourKeyRef.current.set(currentHourKey, visual);
+        root.add(visual.group);
+      }
+      showFrame(currentHourKey, visual);
       signalReady(timestamp);
       return;
     }
 
     if (currentEntry?.status === "missing" || currentEntry?.status === "error") {
-      hideActiveFrames();
+      hideActiveFrame();
       signalReady(timestamp);
       return;
     }
@@ -1089,10 +1493,12 @@ export default function UpperAirSupportLayer() {
     orderedHourKeys,
     pointsByHourKey,
     manifestFailed,
+    needsContourContext,
     cacheVersion,
     style,
-    hideActiveFrames,
-    transitionToFrameObjects,
+    storyLayers,
+    hideActiveFrame,
+    showFrame,
     signalReady,
   ]);
 

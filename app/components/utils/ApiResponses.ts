@@ -305,12 +305,39 @@ export type UpperAirSupportPoint = {
   longitude: number;
 };
 
+export type UpperAirSupportFeaturePoint = {
+  latitude: number;
+  longitude: number;
+  value: number;
+};
+
 export type UpperAirSupportCell = [
-  ascent_pa_s: number,
-  divergence_s1: number,
-  u_wind_ms: number,
-  v_wind_ms: number,
+  pv250_excess_pvu: number,
+  trough250_depth_m: number,
+  low925_depth_m: number,
+  ascent500_pa_s: number,
+  divergence250_s1: number,
+  convergence925_s1: number,
+  thickness_deficit_m: number,
+  u250_ms: number,
+  v250_ms: number,
+  jet250_ms: number,
+  moisture_flux_u: number,
+  moisture_flux_v: number,
+  moisture_flux_mag: number,
 ] | null;
+
+export type UpperAirSupportFrameFeatures = {
+  pv250_peak: UpperAirSupportFeaturePoint | null;
+  trough250_min: UpperAirSupportFeaturePoint | null;
+  low925_min: UpperAirSupportFeaturePoint | null;
+  divergence250_peak: UpperAirSupportFeaturePoint | null;
+  ascent500_peak: UpperAirSupportFeaturePoint | null;
+  convergence925_peak: UpperAirSupportFeaturePoint | null;
+  thickness_deficit_peak: UpperAirSupportFeaturePoint | null;
+  jet250_peak: UpperAirSupportFeaturePoint | null;
+  moisture_flux_peak: UpperAirSupportFeaturePoint | null;
+};
 
 export type UpperAirSupportFrame = {
   step_hour: number;
@@ -321,6 +348,7 @@ export type UpperAirSupportFrame = {
   grid_latitudes: number[];
   grid_longitudes: number[];
   cells: UpperAirSupportCell[];
+  features: UpperAirSupportFrameFeatures;
 };
 
 export type UpperAirSupportManifest = {
@@ -332,9 +360,16 @@ export type UpperAirSupportManifest = {
     requested_start_time: string;
     resolved_start_time: string;
     trajectory_pressure_level_hpa: number;
+    pv_level_hpa: number;
+    upper_trough_level_hpa: number;
+    lower_low_level_hpa: number;
     vertical_velocity_level_hpa: number;
-    divergence_level_hpa: number;
-    wind_level_hpa: number;
+    upper_divergence_level_hpa: number;
+    lower_convergence_level_hpa: number;
+    upper_wind_level_hpa: number;
+    moisture_flux_level_hpa: number;
+    thickness_upper_level_hpa: number;
+    thickness_lower_level_hpa: number;
     hours_back_requested: number;
     hours_back_actual: number;
     substeps: number;
@@ -349,18 +384,42 @@ export type UpperAirSupportManifest = {
     point_count: number;
     frame_count: number;
     sample_count_per_frame: number;
+    pv_p75_pvu: number;
+    pv_p90_pvu: number;
+    pv_p95_pvu: number;
+    pv_max_pvu: number;
+    trough_depth_p75_m: number;
+    trough_depth_p90_m: number;
+    trough_depth_p95_m: number;
+    trough_depth_max_m: number;
+    low925_depth_p75_m: number;
+    low925_depth_p90_m: number;
+    low925_depth_p95_m: number;
+    low925_depth_max_m: number;
     ascent_p75_pa_s: number;
     ascent_p90_pa_s: number;
     ascent_p95_pa_s: number;
     ascent_max_pa_s: number;
-    divergence_p75_s1: number;
-    divergence_p90_s1: number;
-    divergence_p95_s1: number;
-    divergence_max_s1: number;
-    wind_p75_ms: number;
-    wind_p90_ms: number;
-    wind_p95_ms: number;
-    wind_max_ms: number;
+    divergence250_p75_s1: number;
+    divergence250_p90_s1: number;
+    divergence250_p95_s1: number;
+    divergence250_max_s1: number;
+    convergence925_p75_s1: number;
+    convergence925_p90_s1: number;
+    convergence925_p95_s1: number;
+    convergence925_max_s1: number;
+    thickness_deficit_p75_m: number;
+    thickness_deficit_p90_m: number;
+    thickness_deficit_p95_m: number;
+    thickness_deficit_max_m: number;
+    jet250_p75_ms: number;
+    jet250_p90_ms: number;
+    jet250_p95_ms: number;
+    jet250_max_ms: number;
+    moisture_flux_p75: number;
+    moisture_flux_p90: number;
+    moisture_flux_p95: number;
+    moisture_flux_max: number;
   };
   points: UpperAirSupportPoint[];
 };

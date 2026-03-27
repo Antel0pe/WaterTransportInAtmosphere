@@ -43,7 +43,9 @@ export default function TweakpaneControls() {
       ivt: s0.layers.ivt,
       backwardTrajectory: s0.layers.backwardTrajectory,
       trajectorySteering: s0.layers.trajectorySteering,
-      upperAirSupport: s0.layers.upperAirSupport,
+      upperAirPvDriver: s0.layers.upperAirPvDriver,
+      upperAirTiltLink: s0.layers.upperAirTiltLink,
+      upperAirLiftChain: s0.layers.upperAirLiftChain,
 
       uAnomMin: s0.moisture.uAnomMin,
       uAnomMax: s0.moisture.uAnomMax,
@@ -162,7 +164,9 @@ export default function TweakpaneControls() {
       ui.ivt = defaults.layers.ivt;
       ui.backwardTrajectory = defaults.layers.backwardTrajectory;
       ui.trajectorySteering = defaults.layers.trajectorySteering;
-      ui.upperAirSupport = defaults.layers.upperAirSupport;
+      ui.upperAirPvDriver = defaults.layers.upperAirPvDriver;
+      ui.upperAirTiltLink = defaults.layers.upperAirTiltLink;
+      ui.upperAirLiftChain = defaults.layers.upperAirLiftChain;
 
       ui.uAnomMin = defaults.moisture.uAnomMin;
       ui.uAnomMax = defaults.moisture.uAnomMax;
@@ -254,8 +258,14 @@ export default function TweakpaneControls() {
     const bTrajectorySteering = explainableLayersFolder.addBinding(ui, "trajectorySteering", {
       label: "Trajectory Steering",
     });
-    const bUpperAirSupport = explainableLayersFolder.addBinding(ui, "upperAirSupport", {
-      label: "Upper Air Support",
+    const bUpperAirPvDriver = explainableLayersFolder.addBinding(ui, "upperAirPvDriver", {
+      label: "PV Driver",
+    });
+    const bUpperAirTiltLink = explainableLayersFolder.addBinding(ui, "upperAirTiltLink", {
+      label: "Tilted Trough",
+    });
+    const bUpperAirLiftChain = explainableLayersFolder.addBinding(ui, "upperAirLiftChain", {
+      label: "Lift Chain",
     });
 
     bBackTraj.on("change", (e) => {
@@ -264,8 +274,14 @@ export default function TweakpaneControls() {
     bTrajectorySteering.on("change", (e) => {
       useControls.getState().setLayer("trajectorySteering", !!e.value);
     });
-    bUpperAirSupport.on("change", (e) => {
-      useControls.getState().setLayer("upperAirSupport", !!e.value);
+    bUpperAirPvDriver.on("change", (e) => {
+      useControls.getState().setLayer("upperAirPvDriver", !!e.value);
+    });
+    bUpperAirTiltLink.on("change", (e) => {
+      useControls.getState().setLayer("upperAirTiltLink", !!e.value);
+    });
+    bUpperAirLiftChain.on("change", (e) => {
+      useControls.getState().setLayer("upperAirLiftChain", !!e.value);
     });
 
     // ---- Data layers ----
@@ -310,12 +326,12 @@ export default function TweakpaneControls() {
       });
 
     const upperAirSupportStyleFolder = pane.addFolder({
-      title: "Upper Air Support Style",
+      title: "Upper Air Story Style",
     });
 
     upperAirSupportStyleFolder
       .addBinding(ui, "upperAirAscentThreshold", {
-        label: "Ascent Threshold",
+        label: "Field Threshold",
         min: 0.0,
         max: 1.0,
         step: 0.01,
@@ -328,7 +344,7 @@ export default function TweakpaneControls() {
 
     upperAirSupportStyleFolder
       .addBinding(ui, "upperAirAscentOpacity", {
-        label: "Ascent Opacity",
+        label: "Field Opacity",
         min: 0.0,
         max: 1.0,
         step: 0.01,
@@ -339,7 +355,7 @@ export default function TweakpaneControls() {
 
     upperAirSupportStyleFolder
       .addBinding(ui, "upperAirAscentGamma", {
-        label: "Ascent Gamma",
+        label: "Field Gamma",
         min: 0.3,
         max: 3.0,
         step: 0.05,
@@ -350,7 +366,7 @@ export default function TweakpaneControls() {
 
     upperAirSupportStyleFolder
       .addBinding(ui, "upperAirDivergenceThreshold", {
-        label: "Divergence Threshold",
+        label: "Vector Threshold",
         min: 0.0,
         max: 1.0,
         step: 0.01,
@@ -827,10 +843,24 @@ export default function TweakpaneControls() {
       }
     );
 
-    const unsubUpperAirSupportVis = useControls.subscribe(
-      (s) => s.layers.upperAirSupport,
+    const unsubUpperAirPvDriverVis = useControls.subscribe(
+      (s) => s.layers.upperAirPvDriver,
       (v) => {
-        ui.upperAirSupport = v;
+        ui.upperAirPvDriver = v;
+      }
+    );
+
+    const unsubUpperAirTiltLinkVis = useControls.subscribe(
+      (s) => s.layers.upperAirTiltLink,
+      (v) => {
+        ui.upperAirTiltLink = v;
+      }
+    );
+
+    const unsubUpperAirLiftChainVis = useControls.subscribe(
+      (s) => s.layers.upperAirLiftChain,
+      (v) => {
+        ui.upperAirLiftChain = v;
       }
     );
 
@@ -1094,7 +1124,9 @@ export default function TweakpaneControls() {
       unsubIVTVis();
       unsubBackTrajVis();
       unsubTrajectorySteeringVis();
-      unsubUpperAirSupportVis();
+      unsubUpperAirPvDriverVis();
+      unsubUpperAirTiltLinkVis();
+      unsubUpperAirLiftChainVis();
       unsubIVTParams();
       unsubPVParams();
       unsubDivergenceParams();

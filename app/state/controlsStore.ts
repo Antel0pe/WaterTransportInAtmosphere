@@ -7,7 +7,9 @@ export type LayerToggles = {
   ivt: boolean;
   backwardTrajectory: boolean;
   trajectorySteering: boolean;
-  upperAirSupport: boolean;
+  upperAirPvDriver: boolean;
+  upperAirTiltLink: boolean;
+  upperAirLiftChain: boolean;
 };
 
 type EvapParams = {
@@ -211,7 +213,9 @@ export const useControls = create<ControlsState>()(
       ivt: false,
       backwardTrajectory: false,
       trajectorySteering: true,
-      upperAirSupport: false,
+      upperAirPvDriver: false,
+      upperAirTiltLink: false,
+      upperAirLiftChain: false,
     },
 
     mslContours: {
