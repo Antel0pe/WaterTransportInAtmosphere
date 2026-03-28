@@ -43,6 +43,8 @@ export default function TweakpaneControls() {
       ivt: s0.layers.ivt,
       backwardTrajectory: s0.layers.backwardTrajectory,
       trajectorySteering: s0.layers.trajectorySteering,
+      upperAirVerticalVelocity: s0.layers.upperAirVerticalVelocity,
+      upperAirStackedStructure: s0.layers.upperAirStackedStructure,
       upperAirPvDriver: s0.layers.upperAirPvDriver,
       upperAirTiltLink: s0.layers.upperAirTiltLink,
       upperAirLiftChain: s0.layers.upperAirLiftChain,
@@ -164,6 +166,8 @@ export default function TweakpaneControls() {
       ui.ivt = defaults.layers.ivt;
       ui.backwardTrajectory = defaults.layers.backwardTrajectory;
       ui.trajectorySteering = defaults.layers.trajectorySteering;
+      ui.upperAirVerticalVelocity = defaults.layers.upperAirVerticalVelocity;
+      ui.upperAirStackedStructure = defaults.layers.upperAirStackedStructure;
       ui.upperAirPvDriver = defaults.layers.upperAirPvDriver;
       ui.upperAirTiltLink = defaults.layers.upperAirTiltLink;
       ui.upperAirLiftChain = defaults.layers.upperAirLiftChain;
@@ -258,6 +262,20 @@ export default function TweakpaneControls() {
     const bTrajectorySteering = explainableLayersFolder.addBinding(ui, "trajectorySteering", {
       label: "Trajectory Steering",
     });
+    const bUpperAirVerticalVelocity = explainableLayersFolder.addBinding(
+      ui,
+      "upperAirVerticalVelocity",
+      {
+        label: "Smoothed Vertical Velocity",
+      }
+    );
+    const bUpperAirStackedStructure = explainableLayersFolder.addBinding(
+      ui,
+      "upperAirStackedStructure",
+      {
+        label: "Stacked Structure",
+      }
+    );
     const bUpperAirPvDriver = explainableLayersFolder.addBinding(ui, "upperAirPvDriver", {
       label: "PV Driver",
     });
@@ -273,6 +291,12 @@ export default function TweakpaneControls() {
     });
     bTrajectorySteering.on("change", (e) => {
       useControls.getState().setLayer("trajectorySteering", !!e.value);
+    });
+    bUpperAirVerticalVelocity.on("change", (e) => {
+      useControls.getState().setLayer("upperAirVerticalVelocity", !!e.value);
+    });
+    bUpperAirStackedStructure.on("change", (e) => {
+      useControls.getState().setLayer("upperAirStackedStructure", !!e.value);
     });
     bUpperAirPvDriver.on("change", (e) => {
       useControls.getState().setLayer("upperAirPvDriver", !!e.value);
@@ -843,6 +867,20 @@ export default function TweakpaneControls() {
       }
     );
 
+    const unsubUpperAirVerticalVelocityVis = useControls.subscribe(
+      (s) => s.layers.upperAirVerticalVelocity,
+      (v) => {
+        ui.upperAirVerticalVelocity = v;
+      }
+    );
+
+    const unsubUpperAirStackedStructureVis = useControls.subscribe(
+      (s) => s.layers.upperAirStackedStructure,
+      (v) => {
+        ui.upperAirStackedStructure = v;
+      }
+    );
+
     const unsubUpperAirPvDriverVis = useControls.subscribe(
       (s) => s.layers.upperAirPvDriver,
       (v) => {
@@ -1124,6 +1162,8 @@ export default function TweakpaneControls() {
       unsubIVTVis();
       unsubBackTrajVis();
       unsubTrajectorySteeringVis();
+      unsubUpperAirVerticalVelocityVis();
+      unsubUpperAirStackedStructureVis();
       unsubUpperAirPvDriverVis();
       unsubUpperAirTiltLinkVis();
       unsubUpperAirLiftChainVis();

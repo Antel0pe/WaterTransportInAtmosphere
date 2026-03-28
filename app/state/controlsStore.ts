@@ -7,6 +7,8 @@ export type LayerToggles = {
   ivt: boolean;
   backwardTrajectory: boolean;
   trajectorySteering: boolean;
+  upperAirVerticalVelocity: boolean;
+  upperAirStackedStructure: boolean;
   upperAirPvDriver: boolean;
   upperAirTiltLink: boolean;
   upperAirLiftChain: boolean;
@@ -213,6 +215,8 @@ export const useControls = create<ControlsState>()(
       ivt: false,
       backwardTrajectory: false,
       trajectorySteering: true,
+      upperAirVerticalVelocity: false,
+      upperAirStackedStructure: false,
       upperAirPvDriver: false,
       upperAirTiltLink: false,
       upperAirLiftChain: false,

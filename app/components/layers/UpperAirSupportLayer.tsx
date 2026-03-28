@@ -8,6 +8,7 @@ import {
   fetchMslContours,
   fetchUpperAirSupportFrame,
   fetchUpperAirSupportManifest,
+  potentialVorticityApiUrl,
   type MslContoursFile,
   type UpperAirSupportFeaturePoint,
   type UpperAirSupportFrame,
@@ -16,15 +17,41 @@ import {
 } from "../utils/ApiResponses";
 import { latLonToVec3 } from "../utils/EarthUtils";
 import { useControls } from "../../state/controlsStore";
+import { configureDataTexture } from "./shaderUtils";
 
-type StoryLayerKey = "pvDriver" | "tiltLink" | "liftChain";
+type StoryLayerKey =
+  | "verticalVelocity"
+  | "stackedStructure"
+  | "pvDriver"
+  | "tiltLink"
+  | "liftChain";
 
 type StoryLayerState = Record<StoryLayerKey, boolean>;
 
 type UpperAirSupportStyleState = {
+  ascentThreshold: number;
   ascentOpacity: number;
+  ascentGamma: number;
+  divergenceThreshold: number;
   arrowScale: number;
   arrowOpacity: number;
+};
+
+type UpperAirSupportSample = {
+  latitude: number;
+  longitude: number;
+  ascent500_pa_s: number;
+  divergence250_s1: number;
+};
+
+type FrameGrid = {
+  lats: number[];
+  lons: number[];
+  nLat: number;
+  nLon: number;
+  samples: Array<Array<UpperAirSupportSample | undefined>>;
+  positions: Float32Array;
+  indices: Uint16Array | Uint32Array;
 };
 
 type StaticBuildResult = {
@@ -52,7 +79,18 @@ type ContourDataEntry =
   | { status: "ready"; data: StoryContourData }
   | { status: "missing" | "error"; data: StoryContourData | null };
 
-const STORY_LAYER_KEYS: StoryLayerKey[] = ["pvDriver", "tiltLink", "liftChain"];
+type PvTextureEntry =
+  | { status: "loading"; promise: Promise<void> }
+  | { status: "ready"; texture: THREE.Texture }
+  | { status: "missing" | "error" };
+
+const STORY_LAYER_KEYS: StoryLayerKey[] = [
+  "verticalVelocity",
+  "stackedStructure",
+  "pvDriver",
+  "tiltLink",
+  "liftChain",
+];
 const CONTOUR_HALF_SPAN_LAT = 10;
 const CONTOUR_HALF_SPAN_LON = 16;
 
@@ -195,6 +233,14 @@ function setMaterialOpacity(
   if (!material) return;
   const mats = Array.isArray(material) ? material : [material];
   for (const mat of mats) {
+    if (mat instanceof THREE.ShaderMaterial) {
+      const uniform = mat.uniforms?.uAlphaMul;
+      if (uniform) {
+        uniform.value = opacity;
+        continue;
+      }
+    }
+
     const target = mat as THREE.Material & {
       opacity?: number;
       transparent?: boolean;
@@ -261,6 +307,226 @@ function makePathDots(
   const dots = new THREE.Points(geom, mat);
   dots.frustumCulled = false;
   return dots;
+}
+
+function makeVertexAlphaMesh(
+  positions: Float32Array,
+  indices: Uint16Array | Uint32Array,
+  colors: Float32Array,
+  alphas: Float32Array,
+  renderOrder: number
+) {
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.BufferAttribute(positions.slice(), 3));
+  geom.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  geom.setAttribute("alpha", new THREE.BufferAttribute(alphas, 1));
+  geom.setIndex(new THREE.BufferAttribute(indices.slice(), 1));
+  geom.computeVertexNormals();
+
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uAlphaMul: { value: 1.0 },
+    },
+    transparent: true,
+    depthWrite: false,
+    depthTest: true,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
+    vertexShader: `
+      attribute vec3 color;
+      attribute float alpha;
+      varying vec3 vColor;
+      varying float vAlpha;
+
+      void main() {
+        vColor = color;
+        vAlpha = alpha;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vColor;
+      varying float vAlpha;
+      uniform float uAlphaMul;
+
+      void main() {
+        gl_FragColor = vec4(vColor, vAlpha * uAlphaMul);
+      }
+    `,
+  });
+
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = renderOrder;
+  return mesh;
+}
+
+function buildFrameGrid(
+  frame: UpperAirSupportFrame,
+  radius: number,
+  lift: number
+): FrameGrid | null {
+  const lats = frame.grid_latitudes ?? [];
+  const lons = frame.grid_longitudes ?? [];
+  const nLat = lats.length;
+  const nLon = lons.length;
+  const count = nLat * nLon;
+  const cells = frame.cells ?? [];
+  if (nLat < 2 || nLon < 2 || count === 0) return null;
+  if (cells.length < count) return null;
+
+  const positions = new Float32Array(count * 3);
+  const samples: Array<Array<UpperAirSupportSample | undefined>> = Array.from(
+    { length: nLat },
+    () => Array<UpperAirSupportSample | undefined>(nLon)
+  );
+
+  let vertexIndex = 0;
+  for (let latIdx = 0; latIdx < nLat; latIdx++) {
+    for (let lonIdx = 0; lonIdx < nLon; lonIdx++) {
+      const lat = lats[latIdx];
+      const lon = lons[lonIdx];
+      const cell = cells[vertexIndex];
+      samples[latIdx][lonIdx] = cell
+        ? {
+            latitude: lat,
+            longitude: lon,
+            ascent500_pa_s: cell[3],
+            divergence250_s1: cell[4],
+          }
+        : undefined;
+
+      const v = latLonToVec3(lat, lon, radius + lift);
+      positions[vertexIndex * 3 + 0] = v.x;
+      positions[vertexIndex * 3 + 1] = v.y;
+      positions[vertexIndex * 3 + 2] = v.z;
+      vertexIndex += 1;
+    }
+  }
+
+  const triangleCount = (nLat - 1) * (nLon - 1) * 2;
+  const indices = new (count > 65535 ? Uint32Array : Uint16Array)(
+    triangleCount * 3
+  );
+  let triIndex = 0;
+  for (let latIdx = 0; latIdx < nLat - 1; latIdx++) {
+    for (let lonIdx = 0; lonIdx < nLon - 1; lonIdx++) {
+      const a = latIdx * nLon + lonIdx;
+      const b = a + 1;
+      const c = a + nLon;
+      const d = c + 1;
+
+      indices[triIndex++] = a;
+      indices[triIndex++] = c;
+      indices[triIndex++] = b;
+      indices[triIndex++] = b;
+      indices[triIndex++] = c;
+      indices[triIndex++] = d;
+    }
+  }
+
+  return { lats, lons, nLat, nLon, samples, positions, indices };
+}
+
+function makeVerticalVelocityMesh(
+  frameGrid: FrameGrid,
+  manifest: UpperAirSupportManifest,
+  style: UpperAirSupportStyleState
+) {
+  const count = frameGrid.nLat * frameGrid.nLon;
+  const colors = new Float32Array(count * 3);
+  const alphas = new Float32Array(count);
+
+  const ascentRef = Math.max(
+    manifest.summary.ascent_p95_pa_s ?? manifest.summary.ascent_max_pa_s ?? 0,
+    1e-6
+  );
+  const threshold = clamp01(style.ascentThreshold) * ascentRef;
+  const denom = Math.max(ascentRef - threshold, 1e-6);
+
+  const warmEdge = new THREE.Color(0xffd8ca);
+  const warmCore = new THREE.Color(0xff5a52);
+
+  let vertexIndex = 0;
+  for (let latIdx = 0; latIdx < frameGrid.nLat; latIdx++) {
+    for (let lonIdx = 0; lonIdx < frameGrid.nLon; lonIdx++) {
+      const sample = frameGrid.samples[latIdx][lonIdx];
+      const ascent = sample?.ascent500_pa_s ?? 0;
+      const t = clamp01((ascent - threshold) / denom);
+      const shaped = Math.pow(t, Math.max(style.ascentGamma, 0.01));
+      const color = warmEdge.clone().lerp(warmCore, Math.pow(t, 0.8));
+
+      colors[vertexIndex * 3 + 0] = color.r;
+      colors[vertexIndex * 3 + 1] = color.g;
+      colors[vertexIndex * 3 + 2] = color.b;
+      alphas[vertexIndex] = style.ascentOpacity * shaped;
+      vertexIndex += 1;
+    }
+  }
+
+  return makeVertexAlphaMesh(frameGrid.positions, frameGrid.indices, colors, alphas, 70);
+}
+
+function makeDivergencePulseMesh(
+  frameGrid: FrameGrid,
+  manifest: UpperAirSupportManifest,
+  style: UpperAirSupportStyleState
+) {
+  const count = frameGrid.nLat * frameGrid.nLon;
+  const colors = new Float32Array(count * 3);
+  const alphas = new Float32Array(count);
+
+  const divergenceRef = Math.max(
+    manifest.summary.divergence250_p95_s1 ?? manifest.summary.divergence250_max_s1 ?? 0,
+    1e-9
+  );
+  const threshold = clamp01(style.divergenceThreshold) * divergenceRef;
+  const denom = Math.max(divergenceRef - threshold, 1e-9);
+  const pulse = new THREE.Color(0xffefb8);
+
+  let vertexIndex = 0;
+  for (let latIdx = 0; latIdx < frameGrid.nLat; latIdx++) {
+    for (let lonIdx = 0; lonIdx < frameGrid.nLon; lonIdx++) {
+      const sample = frameGrid.samples[latIdx][lonIdx];
+      const divergence = sample?.divergence250_s1 ?? 0;
+      const t = clamp01((divergence - threshold) / denom);
+      colors[vertexIndex * 3 + 0] = pulse.r;
+      colors[vertexIndex * 3 + 1] = pulse.g;
+      colors[vertexIndex * 3 + 2] = pulse.b;
+      alphas[vertexIndex] = 0.05 + 0.58 * Math.pow(t, 1.7);
+      vertexIndex += 1;
+    }
+  }
+
+  const mesh = makeVertexAlphaMesh(frameGrid.positions, frameGrid.indices, colors, alphas, 76);
+  mesh.userData.__pulseOpacity = {
+    min: 0.55,
+    max: 1.55,
+    speed: 1.25,
+    phase: 0.18,
+  };
+  return mesh;
+}
+
+function buildVerticalVelocityLayer(
+  frame: UpperAirSupportFrame,
+  manifest: UpperAirSupportManifest,
+  style: UpperAirSupportStyleState,
+  radius: number
+) {
+  const fieldLift = radius * 0.00295;
+  const frameGrid = buildFrameGrid(frame, radius, fieldLift);
+  if (!frameGrid) return null;
+
+  const group = new THREE.Group();
+  group.name = "upper-air-vertical-velocity";
+  group.frustumCulled = false;
+
+  group.add(makeVerticalVelocityMesh(frameGrid, manifest, style));
+  group.add(makeDivergencePulseMesh(frameGrid, manifest, style));
+  return group;
 }
 
 function makeArrowGeometry() {
@@ -657,7 +923,9 @@ function buildLocalContourContext(
   highlightColorHex: number,
   targetFeature: UpperAirSupportFeaturePoint | null,
   levelWindow: number,
-  renderOrder: number
+  renderOrder: number,
+  halfSpanLat = CONTOUR_HALF_SPAN_LAT,
+  halfSpanLon = CONTOUR_HALF_SPAN_LON
 ) {
   if (!contourFile) return null;
 
@@ -692,8 +960,8 @@ function buildLocalContourContext(
         line as Array<[number, number]>,
         centerLat,
         centerLon,
-        CONTOUR_HALF_SPAN_LAT,
-        CONTOUR_HALF_SPAN_LON
+        halfSpanLat,
+        halfSpanLon
       );
       for (const piece of pieces) {
         const splitPieces = splitPolyline(piece, 3.5);
@@ -730,6 +998,233 @@ function buildLocalContourContext(
   }
 
   return group;
+}
+
+function computeContourMinMax(
+  file: MslContoursFile,
+  pressure: "250" | "925"
+) {
+  const fallback =
+    pressure === "250" ? { min: 9600, max: 11200 } : { min: 500, max: 1100 };
+
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const key of Object.keys(file.levels ?? {})) {
+    const value = Number(key);
+    if (!Number.isFinite(value)) continue;
+    if (value < min) min = value;
+    if (value > max) max = value;
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) return fallback;
+  return { min, max };
+}
+
+function gphToExtremaColor(levelM: number, minM: number, maxM: number) {
+  const t = clamp01((levelM - minM) / Math.max(maxM - minM, 1e-6));
+  const blue = new THREE.Color(0x205cff);
+  const neutral = new THREE.Color(0x8b8b8b);
+  const red = new THREE.Color(0xff4a3a);
+  if (t <= 0.5) return blue.clone().lerp(neutral, t * 2.0);
+  return neutral.clone().lerp(red, (t - 0.5) * 2.0);
+}
+
+function levelToContourColor(
+  levelM: number,
+  minM: number,
+  maxM: number,
+  contrast = 2.0
+) {
+  let t = clamp01((levelM - minM) / Math.max(maxM - minM, 1e-6));
+  const width = 0.5 / Math.max(contrast, 1e-6);
+  t = THREE.MathUtils.smoothstep(t, 0.5 - width, 0.5 + width);
+  const green = new THREE.Color(0.0, 1.0, 0.15);
+  const red = new THREE.Color(1.0, 0.0, 0.35);
+  return green.clone().lerp(red, t);
+}
+
+function buildLowerContourSnippets(
+  contourFile: MslContoursFile | null,
+  centerLat: number,
+  centerLon: number,
+  radius: number,
+  lift: number,
+  halfSpanLat: number,
+  halfSpanLon: number,
+  renderOrder: number
+) {
+  if (!contourFile) return null;
+
+  const group = new THREE.Group();
+  group.name = "upper-air-lower-contour-snippets";
+  group.frustumCulled = false;
+  group.renderOrder = renderOrder;
+
+  const { min, max } = computeContourMinMax(contourFile, "925");
+  const levelKeys = Object.keys(contourFile.levels ?? {}).sort(
+    (a, b) => Number(a) - Number(b)
+  );
+
+  for (const levelKey of levelKeys) {
+    const level = Number(levelKey);
+    if (!Number.isFinite(level)) continue;
+    const color = gphToExtremaColor(level, min, max);
+    const lines = contourFile.levels[levelKey] ?? [];
+
+    for (const line of lines) {
+      const pieces = clipPolylineToBox(
+        line as Array<[number, number]>,
+        centerLat,
+        centerLon,
+        halfSpanLat,
+        halfSpanLon
+      );
+      for (const piece of pieces) {
+        for (const splitPiece of splitPolyline(piece, 2.5)) {
+          if (splitPiece.length < 2) continue;
+          const contourLine = makeLine(
+            splitPiece,
+            radius,
+            lift,
+            new THREE.LineBasicMaterial({
+              color,
+              transparent: true,
+              opacity: 0.82,
+              depthWrite: false,
+              depthTest: true,
+            })
+          );
+          contourLine.renderOrder = renderOrder;
+          group.add(contourLine);
+        }
+      }
+    }
+  }
+
+  return group;
+}
+
+function buildUpperContourOverlay(
+  contourFile: MslContoursFile | null,
+  radius: number,
+  lift: number,
+  renderOrder: number
+) {
+  if (!contourFile) return null;
+
+  const group = new THREE.Group();
+  group.name = "upper-air-upper-contours";
+  group.frustumCulled = false;
+  group.renderOrder = renderOrder;
+
+  const { min, max } = computeContourMinMax(contourFile, "250");
+  const levelKeys = Object.keys(contourFile.levels ?? {}).sort(
+    (a, b) => Number(a) - Number(b)
+  );
+
+  for (const levelKey of levelKeys) {
+    const level = Number(levelKey);
+    if (!Number.isFinite(level)) continue;
+    const color = levelToContourColor(level, min, max, 2.0);
+    const material = new THREE.LineBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      depthTest: true,
+    });
+
+    for (const line of contourFile.levels[levelKey] ?? []) {
+      if (!line || line.length < 2) continue;
+      const contourLine = makeLine(
+        line as Array<[number, number]>,
+        radius,
+        lift,
+        material.clone()
+      );
+      contourLine.renderOrder = renderOrder;
+      group.add(contourLine);
+    }
+  }
+
+  return group;
+}
+
+function buildPvFieldMesh(
+  texture: THREE.Texture | null,
+  radius: number,
+  lift: number,
+  renderOrder: number
+) {
+  if (!texture) return null;
+
+  const geom = new THREE.SphereGeometry(radius + lift, 128, 128);
+  const mat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    depthTest: true,
+    uniforms: {
+      uTex: { value: texture },
+      uLonOffset: { value: 0.25 },
+      uDataMin: { value: -2e-6 },
+      uDataMax: { value: 2.4e-5 },
+      uDisplayMin: { value: -2e-6 },
+      uDisplayMax: { value: 2.4e-5 },
+      uGamma: { value: 0.9 },
+      uAlpha: { value: 0.72 },
+      uLayerOpacity: { value: 1.0 },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+uniform sampler2D uTex;
+uniform float uLonOffset;
+uniform float uDataMin;
+uniform float uDataMax;
+uniform float uDisplayMin;
+uniform float uDisplayMax;
+uniform float uGamma;
+uniform float uAlpha;
+uniform float uLayerOpacity;
+varying vec2 vUv;
+
+vec3 palette(float t) {
+  t = clamp(t, 0.0, 1.0);
+  vec3 c0 = vec3(0.07, 0.17, 0.48);
+  vec3 c1 = vec3(0.17, 0.52, 0.85);
+  vec3 c2 = vec3(0.95, 0.95, 0.92);
+  vec3 c3 = vec3(0.86, 0.43, 0.18);
+  vec3 c4 = vec3(0.58, 0.13, 0.08);
+  if (t < 0.25) return mix(c0, c1, t / 0.25);
+  if (t < 0.5) return mix(c1, c2, (t - 0.25) / 0.25);
+  if (t < 0.75) return mix(c2, c3, (t - 0.5) / 0.25);
+  return mix(c3, c4, (t - 0.75) / 0.25);
+}
+
+void main() {
+  vec2 uv = vUv;
+  uv.x = fract(uv.x + uLonOffset);
+  float x = texture2D(uTex, uv).r;
+  float pv = mix(uDataMin, uDataMax, x);
+  float denom = max(uDisplayMax - uDisplayMin, 1e-12);
+  float t = clamp((pv - uDisplayMin) / denom, 0.0, 1.0);
+  t = pow(t, uGamma);
+  vec3 col = palette(t);
+  float alpha = smoothstep(0.02, 0.35, t) * clamp(uAlpha, 0.0, 1.0);
+  alpha *= clamp(uLayerOpacity, 0.0, 1.0);
+  gl_FragColor = vec4(col, alpha);
+}
+    `,
+  });
+
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = renderOrder;
+  return mesh;
 }
 
 function buildPvDriverLayer(
@@ -816,6 +1311,58 @@ function buildPvDriverLayer(
     group,
     makeFeatureMarker(frame.features.pv250_peak, radius, radius * 0.0056, 0xff6fff, 0.0048, 94)
   );
+
+  return group;
+}
+
+function buildStackedStructureLayer(
+  frame: UpperAirSupportFrame,
+  contours: StoryContourData | null,
+  manifest: UpperAirSupportManifest,
+  style: UpperAirSupportStyleState,
+  pvTexture250: THREE.Texture | null,
+  radius: number
+) {
+  const group = new THREE.Group();
+  group.name = "upper-air-stacked-structure";
+
+  const lowerLift = radius * 0.00255;
+  const pvLift = radius * 0.00555;
+  const upperContourLift = radius * 0.00635;
+
+  addIfPresent(
+    group,
+    buildLowerContourSnippets(
+      contours?.lower925 ?? null,
+      frame.latitude,
+      frame.longitude,
+      radius,
+      lowerLift,
+      68,
+      5.5,
+      8.0
+    )
+  );
+
+  addIfPresent(
+    group,
+    buildVerticalVelocityLayer(frame, manifest, style, radius)
+  );
+
+  addIfPresent(group, buildPvFieldMesh(pvTexture250, radius, pvLift, 74));
+
+  addIfPresent(
+    group,
+    buildUpperContourOverlay(
+      contours?.upper250 ?? null,
+      radius,
+      upperContourLift,
+      82
+    )
+  );
+
+  addIfPresent(group, makeFeatureMarker(frame.features.low925_min, radius, lowerLift + radius * 0.00012, 0x8ef6ff, 0.0044, 90));
+  addIfPresent(group, makeFeatureMarker(frame.features.trough250_min, radius, upperContourLift + radius * 0.00012, 0xffd895, 0.0042, 91));
 
   return group;
 }
@@ -990,6 +1537,7 @@ function buildLiftChainLayer(
 function buildFrameVisual(
   frame: UpperAirSupportFrame,
   contours: StoryContourData | null,
+  pvTexture250: THREE.Texture | null,
   manifest: UpperAirSupportManifest,
   style: UpperAirSupportStyleState,
   radius: number
@@ -1000,14 +1548,27 @@ function buildFrameVisual(
   group.visible = false;
   group.renderOrder = 78;
 
+  const verticalVelocity = buildVerticalVelocityLayer(frame, manifest, style, radius);
+  const stackedStructure = buildStackedStructureLayer(
+    frame,
+    contours,
+    manifest,
+    style,
+    pvTexture250,
+    radius
+  );
   const pvDriver = buildPvDriverLayer(frame, contours, manifest, style, radius);
   const tiltLink = buildTiltLinkLayer(frame, contours, radius);
   const liftChain = buildLiftChainLayer(frame, style, radius);
 
+  if (verticalVelocity) group.add(verticalVelocity);
+  if (stackedStructure) group.add(stackedStructure);
   group.add(pvDriver, tiltLink, liftChain);
   return {
     group,
     layers: {
+      verticalVelocity: verticalVelocity ?? undefined,
+      stackedStructure: stackedStructure ?? undefined,
       pvDriver,
       tiltLink,
       liftChain,
@@ -1111,6 +1672,8 @@ function animateStoryObject(root: THREE.Object3D, timeSec: number) {
 }
 
 export default function UpperAirSupportLayer() {
+  const upperAirVerticalVelocity = useControls((s) => s.layers.upperAirVerticalVelocity);
+  const upperAirStackedStructure = useControls((s) => s.layers.upperAirStackedStructure);
   const upperAirPvDriver = useControls((s) => s.layers.upperAirPvDriver);
   const upperAirTiltLink = useControls((s) => s.layers.upperAirTiltLink);
   const upperAirLiftChain = useControls((s) => s.layers.upperAirLiftChain);
@@ -1126,22 +1689,46 @@ export default function UpperAirSupportLayer() {
 
   const storyLayers = useMemo<StoryLayerState>(
     () => ({
+      verticalVelocity: upperAirVerticalVelocity,
+      stackedStructure: upperAirStackedStructure,
       pvDriver: upperAirPvDriver,
       tiltLink: upperAirTiltLink,
       liftChain: upperAirLiftChain,
     }),
-    [upperAirPvDriver, upperAirTiltLink, upperAirLiftChain]
+    [
+      upperAirVerticalVelocity,
+      upperAirStackedStructure,
+      upperAirPvDriver,
+      upperAirTiltLink,
+      upperAirLiftChain,
+    ]
   );
-  const enabled = upperAirPvDriver || upperAirTiltLink || upperAirLiftChain;
-  const needsContourContext = upperAirPvDriver || upperAirTiltLink;
+  const enabled =
+    upperAirVerticalVelocity ||
+    upperAirStackedStructure ||
+    upperAirPvDriver ||
+    upperAirTiltLink ||
+    upperAirLiftChain;
+  const needsContourContext = upperAirStackedStructure || upperAirPvDriver || upperAirTiltLink;
+  const needsPvTexture = upperAirStackedStructure;
 
   const style = useMemo<UpperAirSupportStyleState>(
     () => ({
+      ascentThreshold: upperAirSupport.ascentThreshold,
       ascentOpacity: upperAirSupport.ascentOpacity,
+      ascentGamma: upperAirSupport.ascentGamma,
+      divergenceThreshold: upperAirSupport.divergenceThreshold,
       arrowScale: upperAirSupport.arrowScale,
       arrowOpacity: upperAirSupport.arrowOpacity,
     }),
-    [upperAirSupport.ascentOpacity, upperAirSupport.arrowScale, upperAirSupport.arrowOpacity]
+    [
+      upperAirSupport.ascentThreshold,
+      upperAirSupport.ascentOpacity,
+      upperAirSupport.ascentGamma,
+      upperAirSupport.divergenceThreshold,
+      upperAirSupport.arrowScale,
+      upperAirSupport.arrowOpacity,
+    ]
   );
 
   const [manifest, setManifest] = useState<UpperAirSupportManifest | null>(null);
@@ -1158,6 +1745,7 @@ export default function UpperAirSupportLayer() {
 
   const frameDataCacheRef = useRef<Map<string, FrameDataEntry>>(new Map());
   const contourDataCacheRef = useRef<Map<string, ContourDataEntry>>(new Map());
+  const pvTextureCacheRef = useRef<Map<string, PvTextureEntry>>(new Map());
   const frameVisualsByHourKeyRef = useRef<Map<string, FrameVisual>>(new Map());
   const activeFrameKeyRef = useRef<string | null>(null);
 
@@ -1238,6 +1826,10 @@ export default function UpperAirSupportLayer() {
       frameVisualsByHourKeyRef.current.clear();
       frameDataCacheRef.current.clear();
       contourDataCacheRef.current.clear();
+      for (const entry of pvTextureCacheRef.current.values()) {
+        if (entry.status === "ready") entry.texture.dispose();
+      }
+      pvTextureCacheRef.current.clear();
       markerObjectsByHourKeyRef.current.clear();
 
       const staticGroup = staticGroupRef.current;
@@ -1438,6 +2030,38 @@ export default function UpperAirSupportLayer() {
       }
     }
 
+    if (needsPvTexture) {
+      for (const desiredHourKey of desiredHourKeys) {
+        const existing = pvTextureCacheRef.current.get(desiredHourKey);
+        if (existing?.status === "ready" || existing?.status === "loading") continue;
+
+        const promise = (async () => {
+          try {
+            const texture = await new Promise<THREE.Texture>((resolve, reject) => {
+              new THREE.TextureLoader().load(
+                potentialVorticityApiUrl(desiredHourKey, 250),
+                resolve,
+                undefined,
+                reject
+              );
+            });
+            configureDataTexture(texture);
+            pvTextureCacheRef.current.set(desiredHourKey, {
+              status: "ready",
+              texture,
+            });
+          } catch (err) {
+            console.error(`Failed to load 250 hPa PV texture ${desiredHourKey}`, err);
+            pvTextureCacheRef.current.set(desiredHourKey, { status: "error" });
+          } finally {
+            setCacheVersion((v) => v + 1);
+          }
+        })();
+
+        pvTextureCacheRef.current.set(desiredHourKey, { status: "loading", promise });
+      }
+    }
+
     const protectedKeys = new Set<string>();
     if (activeFrameKeyRef.current) protectedKeys.add(activeFrameKeyRef.current);
 
@@ -1460,10 +2084,21 @@ export default function UpperAirSupportLayer() {
       contourDataCacheRef.current.delete(hourKey);
     }
 
+    for (const [hourKey, entry] of pvTextureCacheRef.current.entries()) {
+      if (desiredSet.has(hourKey) || protectedKeys.has(hourKey)) continue;
+      if (entry.status === "loading") continue;
+      if (entry.status === "ready") entry.texture.dispose();
+      pvTextureCacheRef.current.delete(hourKey);
+    }
+
     const currentEntry = frameDataCacheRef.current.get(currentHourKey);
     if (currentEntry?.status === "ready") {
       const contourEntry = contourDataCacheRef.current.get(currentHourKey);
       if (needsContourContext && contourEntry?.status === "loading") {
+        return;
+      }
+      const pvTextureEntry = pvTextureCacheRef.current.get(currentHourKey);
+      if (needsPvTexture && pvTextureEntry?.status === "loading") {
         return;
       }
 
@@ -1471,7 +2106,16 @@ export default function UpperAirSupportLayer() {
       if (!visual) {
         const contourData =
           contourEntry?.status === "ready" ? contourEntry.data : null;
-        visual = buildFrameVisual(currentEntry.frame, contourData, manifest, style, 100);
+        const pvTexture250 =
+          pvTextureEntry?.status === "ready" ? pvTextureEntry.texture : null;
+        visual = buildFrameVisual(
+          currentEntry.frame,
+          contourData,
+          pvTexture250,
+          manifest,
+          style,
+          100
+        );
         frameVisualsByHourKeyRef.current.set(currentHourKey, visual);
         root.add(visual.group);
       }
@@ -1494,6 +2138,7 @@ export default function UpperAirSupportLayer() {
     pointsByHourKey,
     manifestFailed,
     needsContourContext,
+    needsPvTexture,
     cacheVersion,
     style,
     storyLayers,
