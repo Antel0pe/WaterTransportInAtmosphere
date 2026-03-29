@@ -19,12 +19,7 @@ import { latLonToVec3 } from "../utils/EarthUtils";
 import { useControls } from "../../state/controlsStore";
 import { configureDataTexture } from "./shaderUtils";
 
-type StoryLayerKey =
-  | "verticalVelocity"
-  | "stackedStructure"
-  | "pvDriver"
-  | "tiltLink"
-  | "liftChain";
+type StoryLayerKey = "stackedStructure";
 
 type StoryLayerState = Record<StoryLayerKey, boolean>;
 
@@ -84,13 +79,7 @@ type PvTextureEntry =
   | { status: "ready"; texture: THREE.Texture }
   | { status: "missing" | "error" };
 
-const STORY_LAYER_KEYS: StoryLayerKey[] = [
-  "verticalVelocity",
-  "stackedStructure",
-  "pvDriver",
-  "tiltLink",
-  "liftChain",
-];
+const STORY_LAYER_KEYS: StoryLayerKey[] = ["stackedStructure"];
 const CONTOUR_HALF_SPAN_LAT = 10;
 const CONTOUR_HALF_SPAN_LON = 16;
 
@@ -1326,23 +1315,8 @@ function buildStackedStructureLayer(
   const group = new THREE.Group();
   group.name = "upper-air-stacked-structure";
 
-  const lowerLift = radius * 0.00255;
   const pvLift = radius * 0.00555;
   const upperContourLift = radius * 0.00635;
-
-  addIfPresent(
-    group,
-    buildLowerContourSnippets(
-      contours?.lower925 ?? null,
-      frame.latitude,
-      frame.longitude,
-      radius,
-      lowerLift,
-      68,
-      5.5,
-      8.0
-    )
-  );
 
   addIfPresent(
     group,
@@ -1361,7 +1335,6 @@ function buildStackedStructureLayer(
     )
   );
 
-  addIfPresent(group, makeFeatureMarker(frame.features.low925_min, radius, lowerLift + radius * 0.00012, 0x8ef6ff, 0.0044, 90));
   addIfPresent(group, makeFeatureMarker(frame.features.trough250_min, radius, upperContourLift + radius * 0.00012, 0xffd895, 0.0042, 91));
 
   return group;
@@ -1548,7 +1521,6 @@ function buildFrameVisual(
   group.visible = false;
   group.renderOrder = 78;
 
-  const verticalVelocity = buildVerticalVelocityLayer(frame, manifest, style, radius);
   const stackedStructure = buildStackedStructureLayer(
     frame,
     contours,
@@ -1557,21 +1529,11 @@ function buildFrameVisual(
     pvTexture250,
     radius
   );
-  const pvDriver = buildPvDriverLayer(frame, contours, manifest, style, radius);
-  const tiltLink = buildTiltLinkLayer(frame, contours, radius);
-  const liftChain = buildLiftChainLayer(frame, style, radius);
-
-  if (verticalVelocity) group.add(verticalVelocity);
   if (stackedStructure) group.add(stackedStructure);
-  group.add(pvDriver, tiltLink, liftChain);
   return {
     group,
     layers: {
-      verticalVelocity: verticalVelocity ?? undefined,
       stackedStructure: stackedStructure ?? undefined,
-      pvDriver,
-      tiltLink,
-      liftChain,
     },
   };
 }
@@ -1672,11 +1634,7 @@ function animateStoryObject(root: THREE.Object3D, timeSec: number) {
 }
 
 export default function UpperAirSupportLayer() {
-  const upperAirVerticalVelocity = useControls((s) => s.layers.upperAirVerticalVelocity);
   const upperAirStackedStructure = useControls((s) => s.layers.upperAirStackedStructure);
-  const upperAirPvDriver = useControls((s) => s.layers.upperAirPvDriver);
-  const upperAirTiltLink = useControls((s) => s.layers.upperAirTiltLink);
-  const upperAirLiftChain = useControls((s) => s.layers.upperAirLiftChain);
   const upperAirSupport = useControls((s) => s.upperAirSupport);
   const {
     engineReady,
@@ -1689,27 +1647,12 @@ export default function UpperAirSupportLayer() {
 
   const storyLayers = useMemo<StoryLayerState>(
     () => ({
-      verticalVelocity: upperAirVerticalVelocity,
       stackedStructure: upperAirStackedStructure,
-      pvDriver: upperAirPvDriver,
-      tiltLink: upperAirTiltLink,
-      liftChain: upperAirLiftChain,
     }),
-    [
-      upperAirVerticalVelocity,
-      upperAirStackedStructure,
-      upperAirPvDriver,
-      upperAirTiltLink,
-      upperAirLiftChain,
-    ]
+    [upperAirStackedStructure]
   );
-  const enabled =
-    upperAirVerticalVelocity ||
-    upperAirStackedStructure ||
-    upperAirPvDriver ||
-    upperAirTiltLink ||
-    upperAirLiftChain;
-  const needsContourContext = upperAirStackedStructure || upperAirPvDriver || upperAirTiltLink;
+  const enabled = upperAirStackedStructure;
+  const needsContourContext = upperAirStackedStructure;
   const needsPvTexture = upperAirStackedStructure;
 
   const style = useMemo<UpperAirSupportStyleState>(
