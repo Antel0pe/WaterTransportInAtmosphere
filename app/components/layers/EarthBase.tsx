@@ -383,6 +383,11 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
         let pitch = -(PITCH_MAX - 1e-4);                      // radians
         const MOUSE_SENS = 0.002;           // radians per pixel (tune later)
 
+        function clearMovementState() {
+            pressed.clear();
+            moving = false;
+        }
+
         function onKeyDown(e: KeyboardEvent) {
             const k = e.key.toLowerCase();
             if ([" "].includes(k)) e.preventDefault();
@@ -392,6 +397,10 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
 
         function onKeyUp(e: KeyboardEvent) {
             pressed.delete(e.key.toLowerCase());
+        }
+
+        function onVisibilityChange() {
+            if (document.hidden) clearMovementState();
         }
 
         function startMoveLoop() {
@@ -511,6 +520,8 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
 
         window.addEventListener("keydown", onKeyDown, { passive: false });
         window.addEventListener("keyup", onKeyUp);
+        window.addEventListener("blur", clearMovementState);
+        document.addEventListener("visibilitychange", onVisibilityChange);
         // ---------------- end WASD ----------------
 
         // Resize to parent
@@ -541,6 +552,8 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
 
             window.removeEventListener('keydown', onKeyDown);
             window.removeEventListener('keyup', onKeyUp);
+            window.removeEventListener("blur", clearMovementState);
+            document.removeEventListener("visibilitychange", onVisibilityChange);
 
             renderer.dispose();
             if (renderer.domElement.parentElement === host) host.removeChild(renderer.domElement);

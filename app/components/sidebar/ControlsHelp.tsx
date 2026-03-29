@@ -61,6 +61,17 @@ export default function ControlsHelp() {
             </div>
           </div>
 
+          {/* Arrow keys */}
+          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 10, alignItems: "center" }}>
+            <ArrowKeys />
+            <div>
+              Step time
+              <div style={{ opacity: 0.7, fontWeight: 400 }}>
+                Left / Right arrow = decrement or increment time by the current slider step
+              </div>
+            </div>
+          </div>
+
           {/* Mouse */}
           <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 10, alignItems: "center" }}>
             <MouseIcon />
@@ -124,6 +135,17 @@ function ShiftSpace() {
       <text x="28" y="12" style={labelStyle()}>Shift</text>
       <rect x="66" y="2" width="52" height="20" {...keyStyle()} />
       <text x="92" y="12" style={labelStyle()}>Space</text>
+    </svg>
+  );
+}
+
+function ArrowKeys() {
+  return (
+    <svg width="84" height="24" viewBox="0 0 84 24" aria-hidden>
+      <rect x="6" y="4" width="30" height="16" {...keyStyle()} />
+      <rect x="48" y="4" width="30" height="16" {...keyStyle()} />
+      <text x="21" y="12" style={labelStyle()}>←</text>
+      <text x="63" y="12" style={labelStyle()}>→</text>
     </svg>
   );
 }

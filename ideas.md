@@ -28,3 +28,5 @@ source of atmospheric river
 - for gph extrema identification use a method like percentile based or around a stable area measurement so that you dont oscillate between the absolute lowest which can make it seem like the extrema feature is wildly changing rather than the specifics of your contour spacing. reference current spacing for what im talking about nov 10 2021 11pm utc
 
 - the back trajectory does not match the moisture filament you see visually with moisture layer
+- clean up how the state is encoded in 1 big file and how the layer info explains each layer in separate place apart from the implementation of the layer
+    - structure it easier to think about and edit rather than make 10 different edits in 10 different files
