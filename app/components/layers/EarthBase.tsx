@@ -257,7 +257,7 @@ export default function EarthBase({ timestamp, onAllReadyChange, children }: Pro
         // scene.add(sun);
 
         // --- render-on-demand (guarded; no recursive re-entry) ---
-        let rafId: number | null = null;
+        const rafId: number | null = null;
 
         // ===== Hover-to-rotate (no mousedown) with light inertia =====
         controls.enableRotate = false; // avoid built-in drag rotation (we'll do it)
