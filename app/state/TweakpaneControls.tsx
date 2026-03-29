@@ -1115,5 +1115,5 @@ export default function TweakpaneControls() {
     };
   }, []);
 
-  return <div ref={hostRef} style={{ padding: 12 }} />;
+  return <div ref={hostRef} style={{ width: "100%", padding: 12, boxSizing: "border-box" }} />;
 }

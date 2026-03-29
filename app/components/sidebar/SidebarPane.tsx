@@ -9,14 +9,15 @@ export default function SidebarPane() {
         position: "relative",
         top: 0,
         right: 0,
-        height: "100vh",
+        width: "100%",
+        height: "100%",
         display: "flex",
         flexDirection: "column",
         backdropFilter: "blur(6px)",
-        background: "rgba(18,18,20,0.55)",
-        borderLeft: "1px solid rgba(255,255,255,0.08)",
+        background: "transparent",
+        borderRight: "1px solid rgba(255,255,255,0.08)",
         zIndex: 1000,
-        overflow: "hidden", 
+        overflow: "hidden",
       }}
     >
       <div
