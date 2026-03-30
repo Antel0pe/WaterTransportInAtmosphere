@@ -1,20 +1,128 @@
 import { fetchJsonOrThrow } from "./dataFetchErrors";
 
+const DATA_SOURCE_KIND = process.env.NEXT_PUBLIC_DATA_SOURCE_KIND;
+const PUBLIC_DATA_BASE_PATH = process.env.NEXT_PUBLIC_DATA_BASE_PATH?.trim() || "";
+
+function usesPublicDataAssets() {
+  return DATA_SOURCE_KIND === "public";
+}
+
+function buildPublicDataUrl(...segments: string[]) {
+  const prefix = PUBLIC_DATA_BASE_PATH.replace(/^\/+|\/+$/g, "");
+  return `/${[prefix, ...segments].filter(Boolean).join("/")}`;
+}
+
+function parseDatehour(datehour: string): Date {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(datehour);
+  if (!match) throw new Error("Invalid datehour");
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31 ||
+    hour < 0 ||
+    hour > 23 ||
+    minute < 0 ||
+    minute > 59
+  ) {
+    throw new Error("Invalid datehour");
+  }
+
+  const dt = new Date(Date.UTC(year, month - 1, day, hour, minute, 0, 0));
+
+  if (
+    dt.getUTCFullYear() !== year ||
+    dt.getUTCMonth() !== month - 1 ||
+    dt.getUTCDate() !== day ||
+    dt.getUTCHours() !== hour ||
+    dt.getUTCMinutes() !== minute
+  ) {
+    throw new Error("Invalid datehour");
+  }
+
+  return dt;
+}
+
+function snapToHour(dt: Date): Date {
+  return new Date(
+    Date.UTC(
+      dt.getUTCFullYear(),
+      dt.getUTCMonth(),
+      dt.getUTCDate(),
+      dt.getUTCHours(),
+      0,
+      0,
+      0
+    )
+  );
+}
+
+function toHourlyPngFilename(datehour: string) {
+  const dtHourly = snapToHour(parseDatehour(datehour));
+  const y = dtHourly.getUTCFullYear();
+  const mo = String(dtHourly.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(dtHourly.getUTCDate()).padStart(2, "0");
+  const h = String(dtHourly.getUTCHours()).padStart(2, "0");
+  return `${y}-${mo}-${d}T${h}-00-00.png`;
+}
+
+function toHourlyJsonFilename(datehour: string) {
+  const dtHourly = snapToHour(parseDatehour(datehour));
+  const y = dtHourly.getUTCFullYear();
+  const mo = String(dtHourly.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(dtHourly.getUTCDate()).padStart(2, "0");
+  const h = String(dtHourly.getUTCHours()).padStart(2, "0");
+  return `${y}-${mo}-${d}T${h}-00-00.json`;
+}
+
 export function evaporationApiUrl(datehour: string) {
+  if (usesPublicDataAssets()) {
+    return buildPublicDataUrl(
+      "evap_rgb_instant_clim_anom",
+      toHourlyPngFilename(datehour)
+    );
+  }
+
   return `/api/evaporation/${encodeURIComponent(datehour)}`;
 }
 
 export function totalColumnWaterApiUrl(datehour: string) {
+  if (usesPublicDataAssets()) {
+    return buildPublicDataUrl(
+      "waterTransport-evap-precip-waterColumn",
+      toHourlyPngFilename(datehour)
+    );
+  }
+
   return `/api/total_column_water/${encodeURIComponent(datehour)}`;
 }
 
 export function ivtApiUrl(datehour: string) {
+  if (usesPublicDataAssets()) {
+    return buildPublicDataUrl("ivt-925-1000", toHourlyPngFilename(datehour));
+  }
+
   return `/api/ivt/${encodeURIComponent(datehour)}`;
 }
 
 export type ContoursPressure = "msl" | "250" | "500" | "925";
 
 export function mslContoursApiUrl(datehour: string, pressure: ContoursPressure) {
+  if (usesPublicDataAssets()) {
+    return buildPublicDataUrl(
+      "gph_contours",
+      String(pressure),
+      toHourlyJsonFilename(datehour)
+    );
+  }
+
   return `/api/msl_contours/${encodeURIComponent(String(pressure))}/${encodeURIComponent(datehour)}`;
 }
 
@@ -43,34 +151,86 @@ export async function fetchMslContours(
 }
 
 export function windUvRgApiUrl(datehour: string, pressureLevel: number) {
+  if (usesPublicDataAssets()) {
+    return buildPublicDataUrl(
+      "wind-uv-rg",
+      String(pressureLevel),
+      toHourlyPngFilename(datehour)
+    );
+  }
+
   return `/api/wind_uv/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
 }
 
 export function potentialVorticityApiUrl(datehour: string, pressureLevel: number) {
+  if (usesPublicDataAssets()) {
+    return buildPublicDataUrl(
+      "potential-vorticity-rg",
+      String(pressureLevel),
+      toHourlyPngFilename(datehour)
+    );
+  }
+
   return `/api/potential_vorticity/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
 }
 
 export function divergenceApiUrl(datehour: string, pressureLevel: number) {
+  if (usesPublicDataAssets()) {
+    return buildPublicDataUrl(
+      "divergence-rg",
+      String(pressureLevel),
+      toHourlyPngFilename(datehour)
+    );
+  }
+
   return `/api/divergence/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
 }
 
 export function verticalVelocityApiUrl(datehour: string, pressureLevel: number) {
+  if (usesPublicDataAssets()) {
+    return buildPublicDataUrl(
+      "vertical-velocity-rg",
+      String(pressureLevel),
+      toHourlyPngFilename(datehour)
+    );
+  }
+
   return `/api/vertical_velocity/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
 }
 
 export function temperatureApiUrl(datehour: string, pressureLevel: number) {
+  if (usesPublicDataAssets()) {
+    return buildPublicDataUrl(
+      "temperature-rg",
+      String(pressureLevel),
+      toHourlyPngFilename(datehour)
+    );
+  }
+
   return `/api/temperature/${encodeURIComponent(String(pressureLevel))}/${encodeURIComponent(datehour)}`;
 }
 
 export function backwardTrajectoryApiUrl() {
+  if (usesPublicDataAssets()) {
+    return buildPublicDataUrl("backward_trajectory", "current.json");
+  }
+
   return "/api/backward_trajectory";
 }
 
 export function trajectorySteeringApiUrl() {
+  if (usesPublicDataAssets()) {
+    return buildPublicDataUrl("trajectory_steering", "current.json");
+  }
+
   return "/api/trajectory_steering";
 }
 
 export function upperAirSupportApiUrl() {
+  if (usesPublicDataAssets()) {
+    return buildPublicDataUrl("upper_air_support", "current.json");
+  }
+
   return "/api/upper_air_support";
 }
 
@@ -92,6 +252,14 @@ function normalizeUpperAirSupportHourKey(hourKey: string) {
 }
 
 export function upperAirSupportFrameApiUrl(hourKey: string) {
+  if (usesPublicDataAssets()) {
+    return buildPublicDataUrl(
+      "upper_air_support",
+      "frames",
+      `${normalizeUpperAirSupportHourKey(hourKey).replace(":", "-")}.json`
+    );
+  }
+
   return `/api/upper_air_support/${encodeURIComponent(
     normalizeUpperAirSupportHourKey(hourKey)
   )}`;

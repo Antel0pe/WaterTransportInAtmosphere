@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { getDataRootPath } from "@/app/api/_lib/dataRoot";
+import { getFilesystemDataRootPath } from "@/app/api/_lib/filesystemDataRoot";
 import { noDataForDateResponse } from "@/app/api/_lib/noDataResponse";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const dataRootPath = getFilesystemDataRootPath();
 
 function parseHourKey(hour: string): string {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:00$/.test(hour)) {
@@ -24,7 +26,7 @@ function parseFrameFilename(name: string) {
 }
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   context: { params: Promise<{ hour: string }> }
 ) {
   const { hour } = await context.params;
@@ -39,8 +41,17 @@ export async function GET(
     );
   }
 
-  const framesDir = path.join(getDataRootPath(), "upper_air_support", "frames");
-  const jsonPath = path.join(framesDir, toFrameFilename(hourKey));
+  const filename = toFrameFilename(hourKey);
+
+  if (!dataRootPath) {
+    return NextResponse.json(
+      { error: "This endpoint is disabled when DATA_DIR points inside public/." },
+      { status: 404 }
+    );
+  }
+
+  const framesDir = path.join(dataRootPath, "upper_air_support", "frames");
+  const jsonPath = path.join(framesDir, filename);
 
   let buf: Buffer;
   try {

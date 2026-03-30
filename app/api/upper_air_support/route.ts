@@ -1,17 +1,22 @@
 import { NextResponse } from "next/server";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { getDataRootPath } from "@/app/api/_lib/dataRoot";
+import { getFilesystemDataRootPath } from "@/app/api/_lib/filesystemDataRoot";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const dataRootPath = getFilesystemDataRootPath();
+
 export async function GET() {
-  const jsonPath = path.join(
-    getDataRootPath(),
-    "upper_air_support",
-    "current.json"
-  );
+  if (!dataRootPath) {
+    return NextResponse.json(
+      { error: "This endpoint is disabled when DATA_DIR points inside public/." },
+      { status: 404 }
+    );
+  }
+
+  const jsonPath = path.join(dataRootPath, "upper_air_support", "current.json");
 
   let buf: Buffer;
   try {
