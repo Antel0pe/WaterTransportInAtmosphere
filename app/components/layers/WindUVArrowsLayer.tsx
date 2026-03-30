@@ -7,6 +7,7 @@ import * as BufferGeometryUtils from "three/examples/jsm/utils/BufferGeometryUti
 import { useEarthLayer } from "./EarthBase";
 import { useControls } from "../../state/controlsStore";
 import { windUvRgApiUrl } from "../utils/ApiResponses";
+import { fetchBlobOrThrow, notifyDataFetchError } from "../utils/dataFetchErrors";
 
 import { latLonToVec3, getGlobeRadius } from "../utils/EarthUtils";
 
@@ -170,23 +171,32 @@ export default function Wind925ArrowsLayer() {
     }
 
     async function loadImageData(url: string) {
-      const res = await fetch(url, { cache: "force-cache" });
-      if (!res.ok) throw new Error(`fetch failed: ${res.status} ${res.statusText}`);
+      const fallbackMessage = "Failed to load wind data.";
+      const layerLabel = "Wind arrows (925 hPa)";
 
-      const bmp = await createImageBitmap(await res.blob());
+      try {
+        const blob = await fetchBlobOrThrow(url, fallbackMessage, {
+          layerLabel,
+          cache: "force-cache",
+        });
+        const bmp = await createImageBitmap(blob);
 
-      const canvas = document.createElement("canvas");
-      canvas.width = bmp.width;
-      canvas.height = bmp.height;
+        const canvas = document.createElement("canvas");
+        canvas.width = bmp.width;
+        canvas.height = bmp.height;
 
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
-      if (!ctx) throw new Error("2d canvas unavailable");
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        if (!ctx) throw new Error("2d canvas unavailable");
 
-      ctx.drawImage(bmp, 0, 0);
-      const img = ctx.getImageData(0, 0, bmp.width, bmp.height);
+        ctx.drawImage(bmp, 0, 0);
+        const img = ctx.getImageData(0, 0, bmp.width, bmp.height);
 
-      bmp.close();
-      return img;
+        bmp.close();
+        return img;
+      } catch (error) {
+        notifyDataFetchError(error, fallbackMessage, { layerLabel });
+        throw error;
+      }
     }
 
     (async () => {

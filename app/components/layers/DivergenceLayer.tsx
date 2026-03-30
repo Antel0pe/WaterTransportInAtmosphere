@@ -8,12 +8,14 @@ import {
   configureDataTexture,
   crossfadeTextureUniforms,
   disposeCrossfadeTextures,
+  loadDataTextureFromApi,
 } from "./shaderUtils";
 
 const SUPPORTED_LEVELS = [250, 500, 925] as const;
 type SupportedLevel = (typeof SUPPORTED_LEVELS)[number];
+type DataRange = { min: number; max: number };
 
-function defaultRangeForLevel(level: SupportedLevel): { min: number; max: number } {
+function defaultRangeForLevel(level: SupportedLevel): DataRange {
   if (level === 250) return { min: -0.0005787129048258066, max: 0.0010109632275998592 };
   if (level === 500) return { min: -0.0005457177758216858, max: 0.0009189110714942217 };
   return { min: -0.0011868530418723822, max: 0.0008237080182880163 };
@@ -38,15 +40,19 @@ function applyDivergenceDisplayParams(
   mat.uniforms.uAsinhK.value = p.uAsinhK;
 }
 
-function applyDivergenceLoadedLevelParams(
+function applyDivergenceDecodeRange(
   mat: THREE.ShaderMaterial,
-  p: DivergenceParams,
-  level: SupportedLevel
+  slot: "A" | "B",
+  range: DataRange
 ) {
-  const r = defaultRangeForLevel(level);
-  mat.uniforms.uDataMin.value = r.min;
-  mat.uniforms.uDataMax.value = r.max;
-  applyDivergenceDisplayParams(mat, p);
+  if (slot === "A") {
+    mat.uniforms.uDataMinA.value = range.min;
+    mat.uniforms.uDataMaxA.value = range.max;
+    return;
+  }
+
+  mat.uniforms.uDataMinB.value = range.min;
+  mat.uniforms.uDataMaxB.value = range.max;
 }
 
 export default function DivergenceLayer() {
@@ -81,8 +87,10 @@ export default function DivergenceLayer() {
         uTexB: { value: null as THREE.Texture | null },
         uMix: { value: 0.0 },
         uLonOffset: { value: 0.25 },
-        uDataMin: { value: 0 },
-        uDataMax: { value: 1 },
+        uDataMinA: { value: 0 },
+        uDataMaxA: { value: 1 },
+        uDataMinB: { value: 0 },
+        uDataMaxB: { value: 1 },
         uDisplayMin: { value: s.divergence.uDivMin },
         uDisplayMax: { value: s.divergence.uDivMax },
         uGamma: { value: s.divergence.uGamma },
@@ -103,8 +111,10 @@ uniform sampler2D uTexA;
 uniform sampler2D uTexB;
 uniform float uMix;
 uniform float uLonOffset;
-uniform float uDataMin;
-uniform float uDataMax;
+uniform float uDataMinA;
+uniform float uDataMaxA;
+uniform float uDataMinB;
+uniform float uDataMaxB;
 
 uniform float uDisplayMin;
 uniform float uDisplayMax;
@@ -143,8 +153,9 @@ void main() {
 
   float xA = texture2D(uTexA, uv).r;
   float xB = texture2D(uTexB, uv).r;
-  float x = mix(xA, xB, clamp(uMix, 0.0, 1.0));
-  float value = mix(uDataMin, uDataMax, x);
+  float valueA = mix(uDataMinA, uDataMaxA, xA);
+  float valueB = mix(uDataMinB, uDataMaxB, xB);
+  float value = mix(valueA, valueB, clamp(uMix, 0.0, 1.0));
 
   float v = clamp(value, uDisplayMin, uDisplayMax);
 
@@ -244,9 +255,12 @@ void main() {
 
     const url = divergenceApiUrl(timestamp, level);
 
-    new THREE.TextureLoader().load(
+    void loadDataTextureFromApi({
       url,
-      (tex) => {
+      fallbackMessage: "Failed to load divergence data.",
+      layerLabel: `Divergence (${level} hPa)`,
+    })
+      .then((tex) => {
         if (isCancelled()) {
           tex.dispose();
           return;
@@ -255,7 +269,8 @@ void main() {
         configureDataTexture(tex);
 
         const latest = pendingRef.current ?? useControls.getState().divergence;
-        applyDivergenceLoadedLevelParams(mat, latest, level);
+        const nextRange = defaultRangeForLevel(level);
+        applyDivergenceDisplayParams(mat, latest);
 
         const hadVisibleContent = hasContentRef.current;
         hasContentRef.current = true;
@@ -263,6 +278,8 @@ void main() {
 
         if (!hadVisibleContent) {
           disposeCrossfadeTextures(mat);
+          applyDivergenceDecodeRange(mat, "A", nextRange);
+          applyDivergenceDecodeRange(mat, "B", nextRange);
           mat.uniforms.uTexA.value = tex;
           mat.uniforms.uTexB.value = tex;
           mat.uniforms.uMix.value = 0.0;
@@ -274,24 +291,27 @@ void main() {
           return;
         }
 
+        applyDivergenceDecodeRange(mat, "B", nextRange);
         mat.uniforms.uLayerOpacity.value = 1.0;
         crossfadeTextureUniforms({
           material: mat,
           nextTexture: tex,
           isCancelled,
+          onPromote: () => {
+            applyDivergenceDecodeRange(mat, "A", nextRange);
+            applyDivergenceDecodeRange(mat, "B", nextRange);
+          },
         });
         signalReady(timestamp);
-      },
-      undefined,
-      (err) => {
+      })
+      .catch((err) => {
         if (isCancelled()) return;
         console.error("Failed to load divergence png", err);
         if (!hasContentRef.current) {
           mesh.visible = false;
         }
         signalReady(timestamp);
-      }
-    );
+      });
 
     return () => {
       cancelled = true;

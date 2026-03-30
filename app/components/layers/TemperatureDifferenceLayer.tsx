@@ -7,6 +7,7 @@ import {
   animateUniform,
   configureDataTexture,
   DEFAULT_TEXTURE_FADE_MS,
+  loadDataTextureFromApi,
 } from "./shaderUtils";
 
 const SUPPORTED_LEVELS = [250, 500, 925] as const;
@@ -94,32 +95,29 @@ function applyTemperatureDifferenceLoadedLevelParams(
   applyTemperatureDifferenceDisplayParams(mat, p);
 }
 
-function loadTexture(loader: THREE.TextureLoader, url: string): Promise<THREE.Texture> {
-  return new Promise((resolve, reject) => {
-    loader.load(
-      url,
-      (tex) => resolve(tex),
-      undefined,
-      (err) => reject(err)
-    );
-  });
-}
-
 async function loadTemperatureTexturePair(args: {
-  loader: THREE.TextureLoader;
   currentUrl: string;
   previousUrl: string;
 }): Promise<{ currentTex: THREE.Texture; previousTex: THREE.Texture }> {
-  const { loader, currentUrl, previousUrl } = args;
+  const { currentUrl, previousUrl } = args;
 
-  const currentTex = await loadTexture(loader, currentUrl);
+  const currentTex = await loadDataTextureFromApi({
+    url: currentUrl,
+    fallbackMessage: "Failed to load temperature data.",
+    layerLabel: "Temperature difference layer",
+  });
 
   if (previousUrl === currentUrl) {
     return { currentTex, previousTex: currentTex };
   }
 
   try {
-    const previousTex = await loadTexture(loader, previousUrl);
+    const previousTex = await loadDataTextureFromApi({
+      url: previousUrl,
+      fallbackMessage: "Failed to load previous-hour temperature data.",
+      layerLabel: "Temperature difference layer",
+      notifyOnError: false,
+    });
     return { currentTex, previousTex };
   } catch (err) {
     console.warn("Failed to load previous-hour temperature png; falling back to current hour", err);
@@ -443,8 +441,7 @@ void main() {
       ? temperatureApiUrl(previousTimestamp, level)
       : currentUrl;
 
-    const loader = new THREE.TextureLoader();
-    loadTemperatureTexturePair({ loader, currentUrl, previousUrl })
+    loadTemperatureTexturePair({ currentUrl, previousUrl })
       .then(({ currentTex, previousTex }) => {
         if (isCancelled()) {
           currentTex.dispose();

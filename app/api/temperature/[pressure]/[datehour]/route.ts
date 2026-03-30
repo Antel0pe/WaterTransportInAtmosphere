@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import { getDataRootPath } from "@/app/api/_lib/dataRoot";
+import { noDataForDateResponse } from "@/app/api/_lib/noDataResponse";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -103,7 +105,7 @@ export async function GET(
 
   const hourly = snapToHour(target);
   const filename = toPngFilename(hourly);
-  const imgDir = path.join(process.cwd(), "public", "temperature-rg", String(pressure));
+  const imgDir = path.join(getDataRootPath(), "temperature-rg", String(pressure));
 
   let files: string[];
   try {
@@ -125,11 +127,11 @@ export async function GET(
   const lastKey = keys[keys.length - 1];
 
   if (filename < firstKey || filename > lastKey) {
-    return NextResponse.json({ error: "no such hour exists" }, { status: 404 });
+    return noDataForDateResponse(firstKey, lastKey);
   }
 
   if (!keys.includes(filename)) {
-    return NextResponse.json({ error: "no such hour exists" }, { status: 404 });
+    return noDataForDateResponse(firstKey, lastKey);
   }
 
   const imgPath = path.join(imgDir, filename);

@@ -1,12 +1,11 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getSliderDateRangeFromEnv } from "../lib/sliderDateRange";
 
 // -----------------------------
 // Constants
 // -----------------------------
-const START_STR = "2021-11-01T00:00";
-const END_STR = "2021-11-30T23:00";
 const MS_PER_HOUR = 3_600_000;
 const COMMIT_DELAY_MS = 100;
 
@@ -63,6 +62,18 @@ function prettyFromValueStrUTC(valueStr: string): string {
   return formatPrettyUTC(parseDateTimeUTC(valueStr));
 }
 
+function clampValueToRange(value: string, start: Date, end: Date) {
+  let curMs: number;
+  try {
+    curMs = parseDateTimeUTC(value).getTime();
+  } catch {
+    curMs = start.getTime();
+  }
+
+  const clampedMs = Math.max(start.getTime(), Math.min(end.getTime(), curMs));
+  return formatDateTimeUTC(new Date(clampedMs));
+}
+
 // -----------------------------
 // Component
 // -----------------------------
@@ -72,13 +83,25 @@ export interface TimeSliderProps {
   allReady: boolean;
 }
 
-export default function TimeSlider({ value, onChange, allReady }: TimeSliderProps) {
-  const start = useMemo(() => parseDateTimeUTC(START_STR), []);
-  const end = useMemo(() => parseDateTimeUTC(END_STR), []);
+export default function TimeSlider({
+  value,
+  onChange,
+  allReady,
+}: TimeSliderProps) {
+  const { startDate, endDate } = getSliderDateRangeFromEnv();
+  const start = useMemo(() => parseDateTimeUTC(startDate), [startDate]);
+  const end = useMemo(() => parseDateTimeUTC(endDate), [endDate]);
+  const clampedValue = useMemo(() => clampValueToRange(value, start, end), [value, start, end]);
   const [stepHours, setStepHours] = useState<number>(3);
   const stepHoursRef = useRef<number>(3);
   const [collapsed, setCollapsed] = useState(true);
   useEffect(() => { stepHoursRef.current = stepHours; }, [stepHours]);
+
+  useEffect(() => {
+    if (clampedValue !== value) {
+      onChange(clampedValue);
+    }
+  }, [clampedValue, onChange, value]);
 
   // Total slider span in whole hours
   const totalHours = useMemo(() => {
@@ -88,17 +111,10 @@ export default function TimeSlider({ value, onChange, allReady }: TimeSliderProp
 
   // Clamp incoming prop value into [start, end], then convert to hour offset
   const currentHours = useMemo(() => {
-    let curMs: number;
-    try {
-      curMs = parseDateTimeUTC(value).getTime();
-    } catch {
-      curMs = start.getTime();
-    }
-
-    const clampedMs = Math.max(start.getTime(), Math.min(end.getTime(), curMs));
+    const clampedMs = parseDateTimeUTC(clampedValue).getTime();
     const hrs = Math.floor((clampedMs - start.getTime()) / MS_PER_HOUR);
     return Math.max(0, Math.min(totalHours, hrs));
-  }, [value, start, end, totalHours]);
+  }, [clampedValue, start, totalHours]);
 
   // Draft (UI) state
   const [draftHours, setDraftHours] = useState<number>(currentHours);
@@ -393,7 +409,7 @@ export default function TimeSlider({ value, onChange, allReady }: TimeSliderProp
             }}
           >
             <div style={{ flex: 1, textAlign: "left" }}>
-              {prettyFromValueStrUTC(START_STR)} UTC
+              {prettyFromValueStrUTC(startDate)} UTC
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -436,7 +452,7 @@ export default function TimeSlider({ value, onChange, allReady }: TimeSliderProp
             </div>
 
             <div style={{ flex: 1, textAlign: "right" }}>
-              {prettyFromValueStrUTC(END_STR)} UTC
+              {prettyFromValueStrUTC(endDate)} UTC
             </div>
           </div>
 

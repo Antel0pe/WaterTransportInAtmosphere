@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { useEarthLayer } from "./EarthBase";
 import { windUvRgApiUrl } from "../utils/ApiResponses"; // you said to use this
 import { useControls } from "@/app/state/controlsStore";
+import { loadDataTextureFromApi } from "./shaderUtils";
 
 export const min_max_gph_ranges_glsl = `
 uniform float uPressure;
@@ -856,10 +857,12 @@ export default function WindTrailParticlesLayer({
     const isCancelled = () => disposed || myReqId !== reqIdRef.current;
     const url = windUvRgApiUrl(timestamp, windTrailsPressure);
 
-    const loader = new THREE.TextureLoader();
-    loader.load(
+    void loadDataTextureFromApi({
       url,
-      (texture) => {
+      fallbackMessage: "Failed to load wind data.",
+      layerLabel: `Wind particle trails (${windTrailsPressure} hPa)`,
+    })
+      .then((texture) => {
         if (isCancelled()) {
           texture.dispose();
           return;
@@ -992,14 +995,12 @@ export default function WindTrailParticlesLayer({
         existing.trailOverlayMat.uniforms.uTrailTex.value = existing.trailReadRT.texture;
 
         signalReady(timestamp);
-      },
-      undefined,
-      (err) => {
+      })
+      .catch((err) => {
         if (isCancelled()) return;
         console.error("Failed to load wind uv png", err);
         signalReady(timestamp);
-      }
-    );
+      });
 
     return () => {
       disposed = true;
