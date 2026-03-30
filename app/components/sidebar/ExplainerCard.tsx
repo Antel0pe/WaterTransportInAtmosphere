@@ -67,17 +67,6 @@ export default function ExplainerCard() {
             </div>
           </div>
 
-          {/* Reading tips */}
-          <div style={rowStyle()}>
-            <LegendIcon />
-            <div>
-              How to read it quickly
-              <div style={muted()}>
-                Red means higher-than-average total column water. Look for the long, continuous band that forms in mid to late
-                November: it traces a moisture corridor from near Hawaii to the Pacific Northwest.
-              </div>
-            </div>
-          </div>
         </div>
       )}
     </section>
@@ -149,27 +138,6 @@ function PineappleIcon() {
       <path d="M16 22 L26 30" {...iconStroke()} />
       <path d="M26 22 L16 30" {...iconStroke()} />
       <path d="M15 26 L27 26" {...iconStroke()} />
-    </svg>
-  );
-}
-
-function LegendIcon() {
-  return (
-    <svg width="42" height="42" viewBox="0 0 42 42" aria-hidden>
-      <circle cx="21" cy="21" r="18" fill="rgba(255,255,255,0.03)" />
-      <rect
-        x="12"
-        y="13"
-        width="18"
-        height="16"
-        rx="6"
-        fill="rgba(255,255,255,0.05)"
-        stroke="rgba(255,255,255,0.18)"
-        strokeWidth="1.2"
-      />
-      <line x1="16" y1="18" x2="28" y2="18" stroke="rgba(255,255,255,0.35)" strokeWidth="2" strokeLinecap="round" />
-      <line x1="16" y1="22" x2="25" y2="22" stroke="rgba(255,255,255,0.25)" strokeWidth="2" strokeLinecap="round" />
-      <line x1="16" y1="26" x2="22" y2="26" stroke="rgba(255,255,255,0.18)" strokeWidth="2" strokeLinecap="round" />
     </svg>
   );
 }

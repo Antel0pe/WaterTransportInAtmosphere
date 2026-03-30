@@ -1,3 +1,5 @@
+import { fetchJsonOrThrow } from "./dataFetchErrors";
+
 export function evaporationApiUrl(datehour: string) {
   return `/api/evaporation/${encodeURIComponent(datehour)}`;
 }
@@ -30,13 +32,14 @@ export async function fetchMslContours(
   datehour: string,
   pressure: ContoursPressure
 ): Promise<MslContoursFile> {
-  const res = await fetch(mslContoursApiUrl(datehour, pressure));
+  const layerLabel =
+    pressure === "msl" ? "Sea-level pressure contours" : `${pressure} hPa contours`;
 
-  if (!res.ok) {
-    throw new Error(`MSL contours fetch failed (${res.status} ${res.statusText})`);
-  }
-
-  return (await res.json()) as MslContoursFile;
+  return fetchJsonOrThrow<MslContoursFile>(
+    mslContoursApiUrl(datehour, pressure),
+    "Failed to load contour data.",
+    { layerLabel }
+  );
 }
 
 export function windUvRgApiUrl(datehour: string, pressureLevel: number) {
@@ -190,15 +193,11 @@ export type BackwardTrajectoryFile = {
 };
 
 export async function fetchBackwardTrajectory(): Promise<BackwardTrajectoryFile> {
-  const res = await fetch(backwardTrajectoryApiUrl());
-
-  if (!res.ok) {
-    throw new Error(
-      `Backward trajectory fetch failed (${res.status} ${res.statusText})`
-    );
-  }
-
-  return (await res.json()) as BackwardTrajectoryFile;
+  return fetchJsonOrThrow<BackwardTrajectoryFile>(
+    backwardTrajectoryApiUrl(),
+    "Failed to load backward trajectory data.",
+    { layerLabel: "Backward trajectory" }
+  );
 }
 
 export type TrajectorySteeringContour = {
@@ -286,15 +285,11 @@ export type TrajectorySteeringFile = {
 };
 
 export async function fetchTrajectorySteering(): Promise<TrajectorySteeringFile> {
-  const res = await fetch(trajectorySteeringApiUrl());
-
-  if (!res.ok) {
-    throw new Error(
-      `Trajectory steering fetch failed (${res.status} ${res.statusText})`
-    );
-  }
-
-  return (await res.json()) as TrajectorySteeringFile;
+  return fetchJsonOrThrow<TrajectorySteeringFile>(
+    trajectorySteeringApiUrl(),
+    "Failed to load trajectory steering data.",
+    { layerLabel: "Trajectory steering" }
+  );
 }
 
 export type UpperAirSupportPoint = {
@@ -425,28 +420,20 @@ export type UpperAirSupportManifest = {
 };
 
 export async function fetchUpperAirSupportManifest(): Promise<UpperAirSupportManifest> {
-  const res = await fetch(upperAirSupportApiUrl());
-
-  if (!res.ok) {
-    throw new Error(
-      `Upper air support manifest fetch failed (${res.status} ${res.statusText})`
-    );
-  }
-
-  return (await res.json()) as UpperAirSupportManifest;
+  return fetchJsonOrThrow<UpperAirSupportManifest>(
+    upperAirSupportApiUrl(),
+    "Failed to load upper-air support data.",
+    { layerLabel: "Upper-air support" }
+  );
 }
 
 export async function fetchUpperAirSupportFrame(
   hourKey: string
 ): Promise<UpperAirSupportFrame> {
   const normalizedHourKey = normalizeUpperAirSupportHourKey(hourKey);
-  const res = await fetch(upperAirSupportFrameApiUrl(normalizedHourKey));
-
-  if (!res.ok) {
-    throw new Error(
-      `Upper air support frame fetch failed (${res.status} ${res.statusText})`
-    );
-  }
-
-  return (await res.json()) as UpperAirSupportFrame;
+  return fetchJsonOrThrow<UpperAirSupportFrame>(
+    upperAirSupportFrameApiUrl(normalizedHourKey),
+    "Failed to load upper-air support frame.",
+    { layerLabel: "Upper-air support" }
+  );
 }

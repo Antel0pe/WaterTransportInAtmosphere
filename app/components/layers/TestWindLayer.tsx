@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { useEarthLayer } from "./EarthBase";
 import { windUvRgApiUrl } from "../utils/ApiResponses";
-import { configureDataTexture } from "./shaderUtils";
+import { configureDataTexture, loadDataTextureFromApi } from "./shaderUtils";
 
 const UV_MIN = -40.0;
 const UV_MAX = 40.0;
@@ -174,9 +174,12 @@ export default function TestWindLayer() {
 
     const url = windUvRgApiUrl(timestamp, 250);
 
-    new THREE.TextureLoader().load(
+    void loadDataTextureFromApi({
       url,
-      (tex) => {
+      fallbackMessage: "Failed to load wind data.",
+      layerLabel: "Wind test layer",
+    })
+      .then((tex) => {
         if (isCancelled()) {
           tex.dispose();
           return;
@@ -214,14 +217,12 @@ export default function TestWindLayer() {
         );
 
         signalReady(timestamp);
-      },
-      undefined,
-      (err) => {
+      })
+      .catch((err) => {
         if (isCancelled()) return;
         console.error("Failed to load wind uv 925 png", err);
         signalReady(timestamp);
-      }
-    );
+      });
 
     return () => {
       cancelled = true;

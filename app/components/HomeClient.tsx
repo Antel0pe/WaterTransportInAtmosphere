@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Analytics } from "@vercel/analytics/next";
 import SidebarPane from "./sidebar/SidebarPane";
 import LayerInfoPane from "./sidebar/LayerInfoPane";
+import DataNoticeOverlay from "./DataNoticeOverlay";
 
 const EarthBase = dynamic(() => import("./layers/EarthBase"), {
   ssr: false,
@@ -112,6 +113,7 @@ export default function HomeClient() {
       }}
     >
       <Analytics />
+      <DataNoticeOverlay />
 
       <div
         style={{

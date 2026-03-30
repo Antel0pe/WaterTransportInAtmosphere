@@ -2,6 +2,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import { getDataRootPath } from "@/app/api/_lib/dataRoot";
+import { noDataForDateResponse } from "@/app/api/_lib/noDataResponse";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -100,8 +102,7 @@ export async function GET(
   const filename = toPngFilename(hourly);
 
   const imgDir = path.join(
-    process.cwd(),
-    "public",
+    getDataRootPath(),
     "ivt-925-1000"
   );
 
@@ -133,12 +134,12 @@ export async function GET(
 
   // Out of bounds => error (404)
   if (filename < firstKey || filename > lastKey) {
-    return NextResponse.json({ error: "no such hour exists" }, { status: 404 });
+    return noDataForDateResponse(firstKey, lastKey);
   }
 
   // In bounds but missing specific hour => 404
   if (!keys.includes(filename)) {
-    return NextResponse.json({ error: "no such hour exists" }, { status: 404 });
+    return noDataForDateResponse(firstKey, lastKey);
   }
 
   // Read and return the PNG bytes

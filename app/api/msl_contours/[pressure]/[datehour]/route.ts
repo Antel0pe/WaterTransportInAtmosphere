@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import { getDataRootPath } from "@/app/api/_lib/dataRoot";
+import { noDataForDateResponse } from "@/app/api/_lib/noDataResponse";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -104,7 +106,7 @@ export async function GET(
 
   const hourly = snapToHour(target);
   const filename = toJsonFilename(hourly);
-  const jsonDir = path.join(process.cwd(), "public", "gph_contours", pressureFolder);
+  const jsonDir = path.join(getDataRootPath(), "gph_contours", pressureFolder);
 
   let files: string[];
   try {
@@ -131,7 +133,7 @@ export async function GET(
   const firstKey = keys[0];
   const lastKey = keys[keys.length - 1];
   if (filename < firstKey || filename > lastKey || !keys.includes(filename)) {
-    return NextResponse.json({ error: "no such hour exists" }, { status: 404 });
+    return noDataForDateResponse(firstKey, lastKey);
   }
 
   const jsonPath = path.join(jsonDir, filename);

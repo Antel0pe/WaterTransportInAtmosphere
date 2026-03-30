@@ -1,4 +1,8 @@
 import * as THREE from "three";
+import {
+  fetchBlobOrThrow,
+  notifyDataFetchError,
+} from "../utils/dataFetchErrors";
 
 export const DEFAULT_TEXTURE_FADE_MS = 220;
 
@@ -60,6 +64,7 @@ export function crossfadeTextureUniforms(args: {
   nextTexture: THREE.Texture;
   isCancelled: () => boolean;
   fadeMs?: number;
+  onPromote?: () => void;
   uniforms?: TextureCrossfadeUniformNames;
 }): number | null {
   const {
@@ -67,6 +72,7 @@ export function crossfadeTextureUniforms(args: {
     nextTexture,
     isCancelled,
     fadeMs = DEFAULT_TEXTURE_FADE_MS,
+    onPromote,
     uniforms,
   } = args;
 
@@ -110,6 +116,7 @@ export function crossfadeTextureUniforms(args: {
       texAUniform.value = bNew;
       texBUniform.value = bNew;
       mixUniform.value = 0.0;
+      onPromote?.();
       material.needsUpdate = true;
     }
 
@@ -133,3 +140,33 @@ export function disposeCrossfadeTextures(
   if (texB && texB !== texA) texB.dispose();
 }
 
+export async function loadDataTextureFromApi(args: {
+  url: string;
+  fallbackMessage: string;
+  layerLabel?: string;
+  notifyOnError?: boolean;
+  requestInit?: RequestInit;
+}) {
+  const { url, fallbackMessage, layerLabel, notifyOnError = true, requestInit } =
+    args;
+  const blob = await fetchBlobOrThrow(url, fallbackMessage, {
+    layerLabel,
+    notifyOnError,
+    ...requestInit,
+  });
+
+  const objectUrl = URL.createObjectURL(blob);
+
+  try {
+    return await new Promise<THREE.Texture>((resolve, reject) => {
+      new THREE.TextureLoader().load(objectUrl, resolve, undefined, reject);
+    });
+  } catch (error) {
+    if (notifyOnError) {
+      notifyDataFetchError(error, fallbackMessage, { layerLabel });
+    }
+    throw error;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}

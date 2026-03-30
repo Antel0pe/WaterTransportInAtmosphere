@@ -17,7 +17,7 @@ import {
 } from "../utils/ApiResponses";
 import { latLonToVec3 } from "../utils/EarthUtils";
 import { useControls } from "../../state/controlsStore";
-import { configureDataTexture } from "./shaderUtils";
+import { configureDataTexture, loadDataTextureFromApi } from "./shaderUtils";
 
 type StoryLayerKey = "stackedStructure";
 
@@ -1980,13 +1980,10 @@ export default function UpperAirSupportLayer() {
 
         const promise = (async () => {
           try {
-            const texture = await new Promise<THREE.Texture>((resolve, reject) => {
-              new THREE.TextureLoader().load(
-                potentialVorticityApiUrl(desiredHourKey, 250),
-                resolve,
-                undefined,
-                reject
-              );
+            const texture = await loadDataTextureFromApi({
+              url: potentialVorticityApiUrl(desiredHourKey, 250),
+              fallbackMessage: "Failed to load potential vorticity data.",
+              layerLabel: "Upper-air support",
             });
             configureDataTexture(texture);
             pvTextureCacheRef.current.set(desiredHourKey, {

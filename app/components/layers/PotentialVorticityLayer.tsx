@@ -8,6 +8,7 @@ import {
   configureDataTexture,
   crossfadeTextureUniforms,
   disposeCrossfadeTextures,
+  loadDataTextureFromApi,
 } from "./shaderUtils";
 
 const SUPPORTED_LEVELS = [250, 500, 925] as const;
@@ -214,9 +215,12 @@ void main() {
 
     const url = potentialVorticityApiUrl(timestamp, level);
 
-    new THREE.TextureLoader().load(
+    void loadDataTextureFromApi({
       url,
-      (tex) => {
+      fallbackMessage: "Failed to load potential vorticity data.",
+      layerLabel: `Potential vorticity (${level} hPa)`,
+    })
+      .then((tex) => {
         if (isCancelled()) {
           tex.dispose();
           return;
@@ -251,17 +255,15 @@ void main() {
           isCancelled,
         });
         signalReady(timestamp);
-      },
-      undefined,
-      (err) => {
+      })
+      .catch((err) => {
         if (isCancelled()) return;
         console.error("Failed to load potential vorticity png", err);
         if (!hasContentRef.current) {
           mesh.visible = false;
         }
         signalReady(timestamp);
-      }
-    );
+      });
 
     return () => {
       cancelled = true;

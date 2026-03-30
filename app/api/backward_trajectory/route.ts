@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { getDataRootPath } from "@/app/api/_lib/dataRoot";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   const jsonPath = path.join(
-    process.cwd(),
-    "public",
+    getDataRootPath(),
     "backward_trajectory",
     "current.json"
   );
